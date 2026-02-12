@@ -1,46 +1,34 @@
-.PHONY: build run clean deps help build-cli run-cli
-
+.PHONY: build run clean deps help
+    
 # Default target
 help:
-	@echo "PikPak Personal Cloud Storage Management Tool"
+	@echo "PikPak SaaS Server"
 	@echo ""
 	@echo "Available commands:"
 	@echo "  deps      - Install dependencies"
-	@echo "  build-cli - Build CLI program"
-	@echo "  run-cli   - Run CLI program"
+	@echo "  build     - Build server"
+	@echo "  run       - Run server"
 	@echo "  clean     - Clean build files"
 	@echo "  help      - Show this help information"
-	@echo ""
-	@echo "CLI mode examples:"
-	@echo "  make run-cli ls                   # List root directory files"
-	@echo "  make run-cli quota                # View quota"
-	@echo "  make run-cli download -path '/My Pack'"
 
 # Install dependencies
 deps:
 	@echo "📦 Installing dependencies..."
 	go mod tidy
-	@echo "📦 Installing pikpakcli..."
-	go install github.com/52funny/pikpakcli@latest
 
-# Build CLI program
-build-cli: deps
-	@echo "🔨 Building CLI program..."
-	go build -o pikpak-cli pikpak_cli.go pikpak_client.go config_manager.go
-	@echo "✅ Build completed: ./pikpak-cli"
+# Build Server
+build: deps
+	@echo "🔨 Building Server..."
+	go build -o saas-server cmd/server/main.go
+	@echo "✅ Build completed: ./saas-server"
 
-# Run CLI program
-run-cli:
-	@echo "🚀 Starting CLI program..."
-	@if [ -z "$(ARGS)" ]; then \
-		./pikpak-cli help; \
-	else \
-		./pikpak-cli $(ARGS); \
-	fi
+# Run Server
+run:
+	@echo "🚀 Starting Server..."
+	go run cmd/server/main.go
 
 # Clean build files
 clean:
 	@echo "🧹 Cleaning files..."
-	rm -f pikpak-cli
-	rm -rf downloads temp_cli_downloads
+	rm -f saas-server pikpak-cli pikpak-cli.exe
 	go clean -cache
