@@ -139,6 +139,19 @@ export default function InformasiPage() {
                 </Paper>
             ) : null}
 
+            {/* Guide & help button */}
+            <Paper variant="outlined" sx={{ p: 2, mb: 2, borderRadius: 0 }}>
+                <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 2 }}>
+                    <Box>
+                        <Typography variant="subtitle2" fontWeight={700}>Panduan & bantuan</Typography>
+                        <Typography variant="caption" color="text.secondary">Lihat panduan penggunaan dan cara menghubungi admin.</Typography>
+                    </Box>
+                    <Button size="small" variant="outlined" onClick={() => navigate('/bantuan')}>
+                        Buka
+                    </Button>
+                </Box>
+            </Paper>
+
             {/* Host list button */}
             <Paper variant="outlined" sx={{ p: 2, mb: 3, borderRadius: 0 }}>
                 <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 2 }}>
@@ -147,18 +160,17 @@ export default function InformasiPage() {
                         <Typography variant="caption" color="text.secondary">Menampilkan seluruh host link premium yang disupport.</Typography>
                     </Box>
                     <Button size="small" variant="outlined" onClick={() => navigate('/available-hosts')}>
-                        Tampilkan Host yang Didukung
+                        Lihat Host
                     </Button>
                 </Box>
             </Paper>
 
             {/* Official Posts */}
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2 }}>
-                <CampaignIcon color="primary" />
                 <Typography variant="subtitle1" fontWeight={700} sx={{ color: 'text.primary' }}>
                     Pengumuman Resmi
                 </Typography>
-                <Chip label="Admin" size="small" color="primary" variant="outlined" sx={{ fontSize: 11, height: 22 }} />
+                <Chip label="dari Admin" size="small" color="primary" variant="outlined" sx={{ fontSize: 11, height: 22 }} />
             </Box>
 
             {loading ? (
@@ -175,7 +187,17 @@ export default function InformasiPage() {
                     {filteredPosts.map((post) => {
                         const config = postTypeConfig[post.type] || postTypeConfig.info;
                         return (
-                            <Card key={post.id} variant="outlined" sx={{ borderRadius: 0, transition: 'box-shadow 0.2s', '&:hover': { boxShadow: 2 } }}>
+                            <Card
+                                key={post.id}
+                                variant="outlined"
+                                onClick={() => navigate(`/informasi/post/${encodeURIComponent(String(post.id))}`)}
+                                sx={{
+                                    borderRadius: 0,
+                                    transition: 'box-shadow 0.2s',
+                                    cursor: 'pointer',
+                                    '&:hover': { boxShadow: 2 },
+                                }}
+                            >
                                 <CardContent sx={{ p: 2.5 }}>
                                     <Box sx={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', mb: 1.5 }}>
                                         <Chip icon={config.icon} label={config.label} size="small" color={config.color} variant="outlined" sx={{ fontSize: 11, height: 24 }} />

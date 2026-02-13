@@ -6,15 +6,21 @@ import (
 
 // User represents a user in the system
 type User struct {
-	ID               uint      `gorm:"primaryKey" json:"id"`
-	Email            string    `gorm:"unique;not null" json:"email"`
-	Password         string    `gorm:"not null" json:"-"`
-	Role             string    `gorm:"default:'client'" json:"role"` // "client" or "admin"
-	Balance          int64     `gorm:"default:0" json:"balance"`
-	PikPakFolderID   string    `json:"pikpak_folder_id"`   // User's dedicated folder in PikPak
-	PikPakFolderName string    `json:"pikpak_folder_name"` // Folder name (username_XXXX)
-	CreatedAt        time.Time `json:"created_at"`
-	UpdatedAt        time.Time `json:"updated_at"`
+	ID                 uint       `gorm:"primaryKey" json:"id"`
+	Email              string     `gorm:"unique;not null" json:"email"`
+	EmailVerified      bool       `gorm:"default:false" json:"email_verified"`
+	EmailVerifyToken   string     `gorm:"index" json:"-"`
+	EmailVerifyExp     *time.Time `json:"-"`
+	PasswordResetToken string     `gorm:"index" json:"-"`
+	PasswordResetExp   *time.Time `json:"-"`
+	Password           string     `gorm:"not null" json:"-"`
+	Role               string     `gorm:"default:'client'" json:"role"` // "client" or "admin"
+	IsActive           bool       `gorm:"default:true" json:"is_active"`
+	Balance            int64      `gorm:"default:0" json:"balance"`
+	PikPakFolderID     string     `json:"pikpak_folder_id"`   // User's dedicated folder in PikPak
+	PikPakFolderName   string     `json:"pikpak_folder_name"` // Folder name (username_XXXX)
+	CreatedAt          time.Time  `json:"created_at"`
+	UpdatedAt          time.Time  `json:"updated_at"`
 
 	Transactions    []Transaction    `gorm:"foreignKey:UserID" json:"-"`
 	Notifications   []Notification   `gorm:"foreignKey:UserID" json:"-"`
@@ -35,12 +41,16 @@ type Transaction struct {
 // It is separate from Transaction so pending requests can be tracked without affecting balance.
 type TopUpRequest struct {
 	ID             uint       `gorm:"primaryKey" json:"id"`
+	Serial         string     `gorm:"index" json:"serial"` // human-friendly reference code
 	UserID         uint       `gorm:"index;not null" json:"user_id"`
 	Username       string     `json:"username"` // snapshot of user name/email at submission time
 	Amount         int64      `gorm:"not null" json:"amount"`
-	PaymentMethod  string     `gorm:"not null" json:"payment_method"`  // gopay, bri, bank_jago, crypto_usdt
-	PaymentAccount string     `gorm:"not null" json:"payment_account"` // destination identifier displayed to user
-	Status         string     `gorm:"not null;default:'pending'" json:"status"` // pending, approved, rejected
+	PaymentMethod  string     `gorm:"not null" json:"payment_method"`                    // gopay, bri, bank_jago, crypto_usdt
+	PaymentAccount string     `gorm:"not null" json:"payment_account"`                   // destination identifier displayed to user
+	Status         string     `gorm:"not null;default:'awaiting_payment'" json:"status"` // awaiting_payment, pending, approved, rejected, cancelled, expired
+	ExpiresAt      time.Time  `gorm:"index" json:"expires_at"`
+	PaidAt         *time.Time `json:"paid_at"`
+	CancelledAt    *time.Time `json:"cancelled_at"`
 	AdminReason    string     `json:"admin_reason"`
 	DecidedAt      *time.Time `json:"decided_at"`
 	CreatedAt      time.Time  `json:"created_at"`
@@ -62,8 +72,13 @@ type PremiumRequest struct {
 	ID        uint      `gorm:"primaryKey" json:"id"`
 	UserID    uint      `gorm:"not null" json:"user_id"`
 	URL       string    `gorm:"not null" json:"url"`
+	Filename  string    `json:"filename"`
+	Host      string    `json:"host"`
+	SizeBytes int64     `gorm:"default:0" json:"size_bytes"`
+	Price     int64     `gorm:"default:0" json:"price"`
 	Status    string    `gorm:"default:'pending'" json:"status"` // pending, processing, done, failed
-	ResultURL string    `json:"result_url"`                      // Google Drive link
+	ResultURL string    `json:"result_url"`                      // Direct link download
+	StreamURL string    `json:"stream_url"`                      // Optional streaming URL
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
@@ -146,6 +161,16 @@ type UserPostReply struct {
 	Content     string    `gorm:"type:text;not null" json:"content"`
 	AuthorName  string    `json:"author_name"`
 	AuthorEmail string    `json:"author_email"`
+	CreatedAt   time.Time `json:"created_at"`
+}
+
+// UserUsage tracks service usage events for monitoring/analytics.
+// service_type: torrent | premium
+type UserUsage struct {
+	ID          uint      `gorm:"primaryKey" json:"id"`
+	UserID      uint      `gorm:"index;not null" json:"user_id"`
+	ServiceType string    `gorm:"index;not null" json:"service_type"`
+	Source      string    `gorm:"type:text" json:"source"`
 	CreatedAt   time.Time `json:"created_at"`
 }
 

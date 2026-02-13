@@ -1,74 +1,76 @@
 import React from 'react';
-import Dialog from '@mui/material/Dialog';
-import DialogTitle from '@mui/material/DialogTitle';
-import DialogContent from '@mui/material/DialogContent';
-import DialogActions from '@mui/material/DialogActions';
-import Button from '@mui/material/Button';
-import Box from '@mui/material/Box';
-import Typography from '@mui/material/Typography';
-import Paper from '@mui/material/Paper';
-import IconButton from '@mui/material/IconButton';
+import Modal from '@mui/joy/Modal';
+import ModalDialog from '@mui/joy/ModalDialog';
+import DialogTitle from '@mui/joy/DialogTitle';
+import DialogContent from '@mui/joy/DialogContent';
+import DialogActions from '@mui/joy/DialogActions';
+import Button from '@mui/joy/Button';
+import Box from '@mui/joy/Box';
+import Typography from '@mui/joy/Typography';
+import Sheet from '@mui/joy/Sheet';
+import IconButton from '@mui/joy/IconButton';
 import CloseIcon from '@mui/icons-material/Close';
 
 export default function PreviewModal({ preview, onConfirm, onCancel }) {
     if (!preview) return null;
 
     return (
-        <Dialog open={!!preview} onClose={onCancel} maxWidth="sm" fullWidth>
-            <DialogTitle sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                <Typography variant="h6" fontWeight={600}>
-                    Konfirmasi Unduhan
-                </Typography>
-                <IconButton size="small" onClick={onCancel}>
-                    <CloseIcon />
-                </IconButton>
-            </DialogTitle>
-            <DialogContent>
-                <Paper
-                    elevation={0}
-                    sx={{
-                        bgcolor: (theme) =>
-                            theme.palette.mode === 'dark' ? 'rgba(255,255,255,0.04)' : 'grey.50',
-                        p: 2.5,
-                        border: '1px solid',
-                        borderColor: 'divider',
-                        mb: 3,
-                    }}
-                >
-                    <Typography variant="body2" fontWeight={500} noWrap sx={{ mb: 1 }}>
-                        {preview.name}
+        <Modal open={!!preview} onClose={onCancel}>
+            <ModalDialog size="md" layout="center" sx={{ width: 'min(560px, 92vw)' }}>
+                <DialogTitle sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                    <Typography level="title-lg" sx={{ fontWeight: 700 }}>
+                        Konfirmasi Unduhan
                     </Typography>
-                    <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
-                        <Typography variant="caption" color="text.secondary">
-                            {preview.size} ({preview.size_gb})
+                    <IconButton size="sm" variant="plain" onClick={onCancel}>
+                        <CloseIcon />
+                    </IconButton>
+                </DialogTitle>
+                <DialogContent>
+                    <Sheet
+                        variant="soft"
+                        sx={{
+                            p: 2,
+                            borderRadius: 'md',
+                            border: '1px solid',
+                            borderColor: 'neutral.outlinedBorder',
+                            mb: 2,
+                        }}
+                    >
+                        <Typography level="title-sm" sx={{ fontWeight: 600 }} noWrap>
+                            {preview.name}
                         </Typography>
-                        <Typography
-                            variant="caption"
-                            fontWeight={500}
-                            color={preview.cached ? 'success.main' : 'warning.main'}
-                        >
-                            {preview.cached ? 'Siap diunduh' : 'Sedang diproses...'}
+                        <Box sx={{ mt: 1, display: 'flex', justifyContent: 'space-between', gap: 1 }}>
+                            <Typography level="body-xs" color="neutral">
+                                {preview.size} ({preview.size_gb})
+                            </Typography>
+                            <Typography
+                                level="body-xs"
+                                sx={{ fontWeight: 600 }}
+                                color={preview.cached ? 'success' : 'warning'}
+                            >
+                                {preview.cached ? 'Siap diunduh' : 'Sedang diproses...'}
+                            </Typography>
+                        </Box>
+                    </Sheet>
+
+                    <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', px: 0.25 }}>
+                        <Typography level="body-sm" color="neutral" sx={{ fontWeight: 500 }}>
+                            Total Harga
+                        </Typography>
+                        <Typography level="h3" color="primary" sx={{ fontWeight: 800 }}>
+                            Rp {preview.price}
                         </Typography>
                     </Box>
-                </Paper>
-
-                <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', px: 0.5 }}>
-                    <Typography variant="body2" color="text.secondary" fontWeight={500}>
-                        Total Harga
-                    </Typography>
-                    <Typography variant="h5" fontWeight={700} color="primary.main">
-                        Rp {preview.price}
-                    </Typography>
-                </Box>
-            </DialogContent>
-            <DialogActions sx={{ px: 3, pb: 3 }}>
-                <Button onClick={onCancel} variant="outlined" fullWidth>
-                    Batal
-                </Button>
-                <Button onClick={onConfirm} variant="contained" fullWidth>
-                    Bayar & Unduh
-                </Button>
-            </DialogActions>
-        </Dialog>
+                </DialogContent>
+                <DialogActions sx={{ pt: 1 }}>
+                    <Button onClick={onCancel} variant="outlined" fullWidth>
+                        Batal
+                    </Button>
+                    <Button onClick={onConfirm} variant="solid" fullWidth>
+                        Bayar & Unduh
+                    </Button>
+                </DialogActions>
+            </ModalDialog>
+        </Modal>
     );
 }

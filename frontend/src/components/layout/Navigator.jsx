@@ -14,6 +14,7 @@ import AccountBalanceWalletIcon from '@mui/icons-material/AccountBalanceWallet';
 import AdminPanelSettingsIcon from '@mui/icons-material/AdminPanelSettings';
 import NewspaperIcon from '@mui/icons-material/Newspaper';
 import ForumIcon from '@mui/icons-material/Forum';
+import InsightsIcon from '@mui/icons-material/Insights';
 import { useAuth } from '../../App';
 
 const item = {
@@ -34,6 +35,8 @@ export default function Navigator(props) {
     const isSelected = (path) => {
         if (location.pathname === path) return true;
         if (path === '/informasi' && (location.pathname === '/available-hosts' || location.pathname === '/search')) return true;
+        if (path === '/balance' && (location.pathname === '/topup' || location.pathname === '/topup/new')) return true;
+        if (path === '/admin' && location.pathname.startsWith('/admin') && location.pathname !== '/admin/monitoring') return true;
         return false;
     };
 
@@ -82,6 +85,11 @@ export default function Navigator(props) {
                             id: 'Admin Panel',
                             icon: <AdminPanelSettingsIcon />,
                             path: '/admin',
+                        },
+                        {
+                            id: 'Monitoring Pengguna',
+                            icon: <InsightsIcon />,
+                            path: '/admin/monitoring',
                         },
                     ],
                 },

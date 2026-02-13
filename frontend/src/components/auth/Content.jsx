@@ -69,12 +69,12 @@ export default function Content() {
             <Typography
                 variant="h4"
                 sx={{
-                    fontWeight: 700,
+                    fontWeight: 500,
                     fontFamily: brandFont,
                     color: isDark ? 'rgba(255, 255, 255, 0.88)' : undefined,
                 }}
             >
-                Bantu kamu download dari URL premium dengan mudah
+                Download file dari link premium kini lebih mudah dan cepat!
             </Typography>
 
             {/* Premium brand logos */}

@@ -27,10 +27,17 @@ import FolderIcon from '@mui/icons-material/Folder';
 import DownloadIcon from '@mui/icons-material/Download';
 import AccessTimeIcon from '@mui/icons-material/AccessTime';
 import DownloadingIcon from '@mui/icons-material/Downloading';
+import PlayArrowIcon from '@mui/icons-material/PlayArrow';
+import AttachMoneyIcon from '@mui/icons-material/AttachMoney';
 
 export default function TasksPage() {
     const [files, setFiles] = useState([]);
     const [loading, setLoading] = useState(true);
+    const [premiumHistory, setPremiumHistory] = useState([]);
+    const [loadingPremium, setLoadingPremium] = useState(true);
+    const [premiumPage, setPremiumPage] = useState(1);
+    const [premiumTotalPages, setPremiumTotalPages] = useState(1);
+    const [premiumTotal, setPremiumTotal] = useState(0);
     const [showInfo, setShowInfo] = useState(false);
     const navigate = useNavigate();
 
@@ -58,6 +65,51 @@ export default function TasksPage() {
     useEffect(() => {
         loadFiles(currentFolderId);
     }, [currentFolderId, loadFiles]);
+
+    useEffect(() => {
+        setLoadingPremium(true);
+        fetch(`/api/premium/request?page=${premiumPage}&page_size=25`)
+            .then((res) => res.json())
+            .then((data) => {
+                if (Array.isArray(data)) {
+                    // Backward compatibility if server still returns array
+                    const total = data.length;
+                    const totalPages = Math.max(1, Math.ceil(total / 25));
+                    const page = Math.min(Math.max(1, premiumPage), totalPages);
+                    const start = (page - 1) * 25;
+                    setPremiumHistory(data.slice(start, start + 25));
+                    setPremiumTotal(total);
+                    setPremiumTotalPages(totalPages);
+                    return;
+                }
+
+                const items = Array.isArray(data?.items) ? data.items : [];
+                setPremiumHistory(items);
+                setPremiumTotal(Number(data?.total || 0));
+                setPremiumTotalPages(Math.max(1, Number(data?.total_pages || 1)));
+            })
+            .catch(() => {
+                setPremiumHistory([]);
+                setPremiumTotal(0);
+                setPremiumTotalPages(1);
+            })
+            .finally(() => setLoadingPremium(false));
+    }, [premiumPage]);
+
+    const formatDateTime = (dateStr) => {
+        if (!dateStr) return '-';
+        const d = new Date(dateStr);
+        if (Number.isNaN(d.getTime())) return '-';
+        return d.toLocaleString('id-ID', {
+            day: '2-digit',
+            month: 'short',
+            year: 'numeric',
+            hour: '2-digit',
+            minute: '2-digit',
+        });
+    };
+
+    const formatIDR = (n) => Number(n || 0).toLocaleString('id-ID');
 
     const navigateToFolder = (folderId, folderName) => {
         const currentBreadcrumbIndex = breadcrumb.findIndex((b) => b.id === currentFolderId);
@@ -125,6 +177,9 @@ export default function TasksPage() {
         <Box sx={{ maxWidth: 936, margin: 'auto', position: 'relative' }}>
             {/* Navigation Toolbar + File List */}
             <Paper elevation={0} sx={{ overflow: 'hidden', border: '1px solid', borderColor: 'divider' }}>
+                <Box sx={{ px: 2, py: 1.25, borderBottom: '1px solid', borderColor: 'divider' }}>
+                    <Typography variant="subtitle2" fontWeight={700}>Unduhan Torrent</Typography>
+                </Box>
                 <AppBar position="static" color="default" elevation={0} sx={{ borderBottom: '1px solid', borderColor: 'divider' }}>
                     <Toolbar variant="dense">
                         <Tooltip title="Kembali">
@@ -202,6 +257,94 @@ export default function TasksPage() {
                 <Box sx={{ p: 0 }}>
                     <FileListTable files={files} loading={loading} onFolderClick={navigateToFolder} />
                 </Box>
+            </Paper>
+
+            <Paper elevation={0} sx={{ mt: 2, p: 2, border: '1px solid', borderColor: 'divider' }}>
+                <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1.25 }}>
+                    <Typography variant="subtitle2" fontWeight={700}>Unduhan Host Premium</Typography>
+                    <Typography variant="caption" color="text.secondary">
+                        {premiumTotal} data
+                    </Typography>
+                </Box>
+
+                {loadingPremium ? (
+                    <Typography variant="body2" color="text.secondary">Memuat riwayat premium...</Typography>
+                ) : premiumHistory.length === 0 ? (
+                    <Typography variant="body2" color="text.secondary">Belum ada riwayat download host premium.</Typography>
+                ) : (
+                    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+                        {premiumHistory.map((item) => (
+                            <Paper key={item.id} variant="outlined" sx={{ p: 1.25 }}>
+                                <Box sx={{ display: 'flex', justifyContent: 'space-between', gap: 1, flexWrap: 'wrap' }}>
+                                    <Box sx={{ minWidth: 0, flex: 1 }}>
+                                        <Typography variant="body2" fontWeight={600} noWrap title={item.filename || item.url}>
+                                            {item.filename || item.url}
+                                        </Typography>
+                                        <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+                                            Host: {item.host || '-'} | Tanggal: {formatDateTime(item.created_at)}
+                                        </Typography>
+                                        <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+                                            Ukuran: {(item.size_bytes > 0 ? `${(Number(item.size_bytes) / (1024 * 1024 * 1024)).toFixed(2)} GB` : '-')} |
+                                            {' '}<AttachMoneyIcon sx={{ fontSize: 12, verticalAlign: 'middle', mx: 0.25 }} /> Rp {formatIDR(item.price || 0)}
+                                        </Typography>
+                                    </Box>
+
+                                    <Box sx={{ display: 'flex', gap: 0.75, alignItems: 'center', flexWrap: 'wrap' }}>
+                                        {item.result_url ? (
+                                            <Button
+                                                size="small"
+                                                variant="contained"
+                                                startIcon={<DownloadIcon fontSize="small" />}
+                                                onClick={() => window.open(item.result_url, '_blank', 'noopener,noreferrer')}
+                                                sx={{ textTransform: 'none' }}
+                                            >
+                                                Unduh
+                                            </Button>
+                                        ) : null}
+                                        {item.stream_url ? (
+                                            <Button
+                                                size="small"
+                                                variant="outlined"
+                                                color="success"
+                                                startIcon={<PlayArrowIcon fontSize="small" />}
+                                                onClick={() => window.open(item.stream_url, '_blank', 'noopener,noreferrer')}
+                                                sx={{ textTransform: 'none' }}
+                                            >
+                                                Streaming
+                                            </Button>
+                                        ) : null}
+                                    </Box>
+                                </Box>
+                            </Paper>
+                        ))}
+
+                        <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mt: 0.5 }}>
+                            <Typography variant="caption" color="text.secondary">
+                                Halaman {premiumPage} dari {premiumTotalPages}
+                            </Typography>
+                            <Box sx={{ display: 'flex', gap: 1 }}>
+                                <Button
+                                    size="small"
+                                    variant="outlined"
+                                    disabled={premiumPage <= 1}
+                                    onClick={() => setPremiumPage((p) => Math.max(1, p - 1))}
+                                    sx={{ textTransform: 'none' }}
+                                >
+                                    Sebelumnya
+                                </Button>
+                                <Button
+                                    size="small"
+                                    variant="outlined"
+                                    disabled={premiumPage >= premiumTotalPages}
+                                    onClick={() => setPremiumPage((p) => Math.min(premiumTotalPages, p + 1))}
+                                    sx={{ textTransform: 'none' }}
+                                >
+                                    Berikutnya
+                                </Button>
+                            </Box>
+                        </Box>
+                    </Box>
+                )}
             </Paper>
 
             {/* FAB: + Tambah Unduhan */}

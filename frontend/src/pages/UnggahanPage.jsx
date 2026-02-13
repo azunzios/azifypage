@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from 'react';
-import { useLocation } from 'react-router-dom';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
 import Box from '@mui/material/Box';
 import Paper from '@mui/material/Paper';
 import Card from '@mui/material/Card';
@@ -24,13 +24,19 @@ import PublicIcon from '@mui/icons-material/Public';
 import PersonIcon from '@mui/icons-material/Person';
 import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
 import ChatBubbleOutlineIcon from '@mui/icons-material/ChatBubbleOutline';
+import LaunchIcon from '@mui/icons-material/Launch';
 import { useAuth } from '../App';
 
 export default function UnggahanPage() {
     const location = useLocation();
+    const navigate = useNavigate();
     const { user } = useAuth();
-    const [allPosts, setAllPosts] = useState([]);
-    const [loading, setLoading] = useState(true);
+    const [publicPosts, setPublicPosts] = useState([]);
+    const [myPosts, setMyPosts] = useState([]);
+    const [loading, setLoading] = useState({ public: true, mine: true });
+    const [loadingMore, setLoadingMore] = useState({ public: false, mine: false });
+    const [hasMore, setHasMore] = useState({ public: true, mine: true });
+    const [cursor, setCursor] = useState({ public: null, mine: null });
     const [newPost, setNewPost] = useState('');
     const [posting, setPosting] = useState(false);
     const [message, setMessage] = useState({ text: '', severity: 'success' });
@@ -41,22 +47,109 @@ export default function UnggahanPage() {
     const [replyDraft, setReplyDraft] = useState({});
     const [repliesByPost, setRepliesByPost] = useState({});
 
+    const loadMoreRef = useRef(null);
+
+    const currentKey = tab === 0 ? 'public' : 'mine';
+    const currentPosts = tab === 0 ? publicPosts : myPosts;
+    const PAGE_SIZE = 20;
+
+    const computeNextCursor = (items) => {
+        if (!Array.isArray(items) || items.length === 0) return null;
+        const last = items[items.length - 1];
+        if (!last?.created_at || !last?.id) return null;
+        return { before: last.created_at, before_id: last.id };
+    };
+
+    const fetchPostsPage = async ({ key, reset }) => {
+        const isMine = key === 'mine';
+        if (reset) {
+            setLoading((prev) => ({ ...prev, [key]: true }));
+            setLoadingMore((prev) => ({ ...prev, [key]: false }));
+            setHasMore((prev) => ({ ...prev, [key]: true }));
+            setCursor((prev) => ({ ...prev, [key]: null }));
+        } else {
+            setLoadingMore((prev) => ({ ...prev, [key]: true }));
+        }
+
+        try {
+            const params = new URLSearchParams();
+            params.set('limit', String(PAGE_SIZE));
+            if (isMine) params.set('mine', '1');
+            const cur = reset ? null : cursor[key];
+            if (cur?.before) params.set('before', String(cur.before));
+            if (cur?.before_id) params.set('before_id', String(cur.before_id));
+
+            const res = await fetch(`/api/posts/user?${params.toString()}`);
+            const data = await res.json();
+            const items = Array.isArray(data) ? data : [];
+
+            if (reset) {
+                if (isMine) setMyPosts(items);
+                else setPublicPosts(items);
+            } else {
+                if (isMine) setMyPosts((prev) => [...prev, ...items]);
+                else setPublicPosts((prev) => [...prev, ...items]);
+            }
+
+            const nextCur = computeNextCursor(items);
+            setCursor((prev) => ({ ...prev, [key]: nextCur ? nextCur : prev[key] }));
+            setHasMore((prev) => ({ ...prev, [key]: items.length === PAGE_SIZE }));
+        } catch {
+            if (reset) {
+                if (isMine) setMyPosts([]);
+                else setPublicPosts([]);
+            }
+            setHasMore((prev) => ({ ...prev, [key]: false }));
+        } finally {
+            if (reset) setLoading((prev) => ({ ...prev, [key]: false }));
+            else setLoadingMore((prev) => ({ ...prev, [key]: false }));
+        }
+    };
+
+    const refreshPublic = async () => {
+        await fetchPostsPage({ key: 'public', reset: true });
+    };
+
     useEffect(() => {
-        fetch('/api/posts/user')
-            .then((r) => r.json())
-            .then((data) => setAllPosts(Array.isArray(data) ? data : []))
-            .catch(() => setAllPosts([]))
-            .finally(() => setLoading(false));
+        // initial load (public)
+        fetchPostsPage({ key: 'public', reset: true });
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
-    const displayedPosts = tab === 0
-        ? allPosts
-        : allPosts.filter((p) => p.user_id === user?.id);
+    useEffect(() => {
+        // load mine when tab opened the first time
+        if (tab !== 1) return;
+        if (myPosts.length > 0) return;
+        fetchPostsPage({ key: 'mine', reset: true });
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [tab]);
+
+    useEffect(() => {
+        if (tab !== 0) return;
+        if (!hasMore.public) return;
+        if (loading.public || loadingMore.public) return;
+        const el = loadMoreRef.current;
+        if (!el) return;
+
+        const io = new IntersectionObserver(
+            (entries) => {
+                if (!entries?.[0]?.isIntersecting) return;
+                if (!hasMore.public) return;
+                if (loadingMore.public) return;
+                fetchPostsPage({ key: 'public', reset: false });
+            },
+            { root: null, rootMargin: '600px 0px', threshold: 0.01 },
+        );
+        io.observe(el);
+        return () => io.disconnect();
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [tab, hasMore.public, loading.public, loadingMore.public, cursor.public]);
 
     const query = new URLSearchParams(location.search).get('q')?.trim().toLowerCase() || '';
-    const filteredPosts = query
-        ? displayedPosts.filter((p) => `${p.content || ''} ${p.author_name || ''} ${p.author_email || ''}`.toLowerCase().includes(query))
-        : displayedPosts;
+    const filteredPosts = useMemo(() => {
+        if (!query) return currentPosts;
+        return currentPosts.filter((p) => `${p.content || ''} ${p.author_name || ''} ${p.author_email || ''}`.toLowerCase().includes(query));
+    }, [query, currentPosts]);
 
     const handlePost = async () => {
         if (!newPost.trim()) return;
@@ -69,7 +162,8 @@ export default function UnggahanPage() {
             });
             if (res.ok) {
                 const data = await res.json();
-                setAllPosts([data, ...allPosts]);
+                setPublicPosts((prev) => [data, ...prev]);
+                setMyPosts((prev) => [data, ...prev]);
                 setNewPost('');
                 setMessage({ text: 'Postingan berhasil dikirim!', severity: 'success' });
             } else {
@@ -87,7 +181,8 @@ export default function UnggahanPage() {
         try {
             const res = await fetch(`/api/posts/user?id=${postId}`, { method: 'DELETE' });
             if (res.ok) {
-                setAllPosts(allPosts.filter((p) => p.id !== postId));
+                setPublicPosts((prev) => prev.filter((p) => p.id !== postId));
+                setMyPosts((prev) => prev.filter((p) => p.id !== postId));
                 setMessage({ text: 'Postingan berhasil dihapus', severity: 'success' });
             } else {
                 setMessage({ text: 'Gagal menghapus postingan', severity: 'error' });
@@ -193,6 +288,10 @@ export default function UnggahanPage() {
                         icon={<PublicIcon sx={{ fontSize: 18 }} />}
                         iconPosition="start"
                         label="Publik"
+                        onClick={() => {
+                            // Refresh even when user clicks the same active tab
+                            refreshPublic();
+                        }}
                         sx={{ textTransform: 'none', minHeight: 44, fontSize: 13, fontWeight: 600 }}
                     />
                     <Tab
@@ -245,7 +344,7 @@ export default function UnggahanPage() {
             </Card>
 
             {/* Posts */}
-            {loading ? (
+            {loading[currentKey] ? (
                 <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
                     {[1, 2, 3].map((i) => <Skeleton key={i} variant="rectangular" height={80} />)}
                 </Box>
@@ -268,7 +367,17 @@ export default function UnggahanPage() {
                         const isLoadingReplies = !!replyLoading[post.id];
                         const isPostingReply = !!replyPosting[post.id];
                         return (
-                            <Card key={post.id} variant="outlined" sx={{ borderRadius: 0, transition: 'box-shadow 0.2s', '&:hover': { boxShadow: 1 } }}>
+                            <Card
+                                key={post.id}
+                                variant="outlined"
+                                onClick={() => navigate(`/unggahan/post/${encodeURIComponent(String(post.id))}`)}
+                                sx={{
+                                    borderRadius: 0,
+                                    transition: 'box-shadow 0.2s',
+                                    cursor: 'pointer',
+                                    '&:hover': { boxShadow: 1 },
+                                }}
+                            >
                                 <CardContent sx={{ p: 2.5, '&:last-child': { pb: 2.5 } }}>
                                     <Box sx={{ display: 'flex', gap: 2 }}>
                                         <Avatar sx={{ width: 36, height: 36, bgcolor: isOwner ? 'primary.main' : 'secondary.main', fontSize: 14, fontWeight: 700, flexShrink: 0 }}>
@@ -287,9 +396,29 @@ export default function UnggahanPage() {
                                                     )}
                                                 </Box>
                                                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                                                    <Tooltip title="Buka">
+                                                        <IconButton
+                                                            size="small"
+                                                            onClick={(e) => {
+                                                                e.stopPropagation();
+                                                                navigate(`/unggahan/post/${encodeURIComponent(String(post.id))}`);
+                                                            }}
+                                                            sx={{ mr: 0.25 }}
+                                                        >
+                                                            <LaunchIcon sx={{ fontSize: 18 }} />
+                                                        </IconButton>
+                                                    </Tooltip>
                                                     {canDeletePost && (
                                                         <Tooltip title="Hapus">
-                                                            <IconButton size="small" color="error" onClick={() => handleDelete(post.id)} sx={{ mr: 0.5 }}>
+                                                            <IconButton
+                                                                size="small"
+                                                                color="error"
+                                                                onClick={(e) => {
+                                                                    e.stopPropagation();
+                                                                    handleDelete(post.id);
+                                                                }}
+                                                                sx={{ mr: 0.5 }}
+                                                            >
                                                                 <DeleteOutlineIcon sx={{ fontSize: 18 }} />
                                                             </IconButton>
                                                         </Tooltip>
@@ -308,7 +437,10 @@ export default function UnggahanPage() {
                                                 <Button
                                                     size="small"
                                                     startIcon={<ChatBubbleOutlineIcon sx={{ fontSize: 18 }} />}
-                                                    onClick={() => toggleReplies(post.id)}
+                                                    onClick={(e) => {
+                                                        e.stopPropagation();
+                                                        toggleReplies(post.id);
+                                                    }}
                                                     sx={{ textTransform: 'none' }}
                                                 >
                                                     {isOpen ? 'Tutup' : 'Balas'}
@@ -318,7 +450,7 @@ export default function UnggahanPage() {
 
                                             <Collapse in={isOpen} timeout="auto" unmountOnExit>
                                                 <Divider sx={{ my: 1.5 }} />
-                                                <Box sx={{ pl: 0.5 }}>
+                                                <Box sx={{ pl: 0.5 }} onClick={(e) => e.stopPropagation()}>
                                                     {isLoadingReplies ? (
                                                         <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
                                                             {[1, 2].map((i) => <Skeleton key={i} variant="rectangular" height={44} />)}
@@ -348,7 +480,14 @@ export default function UnggahanPage() {
                                                                                 </Box>
                                                                                 {isReplyOwner && (
                                                                                     <Tooltip title="Hapus balasan">
-                                                                                        <IconButton size="small" color="error" onClick={() => handleDeleteReply(post.id, reply.id)}>
+                                                                                        <IconButton
+                                                                                            size="small"
+                                                                                            color="error"
+                                                                                            onClick={(e) => {
+                                                                                                e.stopPropagation();
+                                                                                                handleDeleteReply(post.id, reply.id);
+                                                                                            }}
+                                                                                        >
                                                                                             <DeleteOutlineIcon sx={{ fontSize: 16 }} />
                                                                                         </IconButton>
                                                                                     </Tooltip>
@@ -378,13 +517,17 @@ export default function UnggahanPage() {
                                                                 placeholder="Tulis balasan..."
                                                                 value={replyDraft[post.id] || ''}
                                                                 onChange={(e) => setReplyDraft((prev) => ({ ...prev, [post.id]: e.target.value }))}
+                                                                onClick={(e) => e.stopPropagation()}
                                                             />
                                                             <Box sx={{ mt: 1, display: 'flex', justifyContent: 'flex-end' }}>
                                                                 <Button
                                                                     variant="contained"
                                                                     size="small"
                                                                     endIcon={<SendIcon />}
-                                                                    onClick={() => handleSendReply(post.id)}
+                                                                    onClick={(e) => {
+                                                                        e.stopPropagation();
+                                                                        handleSendReply(post.id);
+                                                                    }}
                                                                     disabled={isPostingReply || !(replyDraft[post.id] || '').trim() || (replyDraft[post.id] || '').length > 500}
                                                                     sx={{ textTransform: 'none' }}
                                                                 >
@@ -401,6 +544,21 @@ export default function UnggahanPage() {
                             </Card>
                         );
                     })}
+
+                    {/* Infinite load sentinel (Publik only) */}
+                    {tab === 0 ? (
+                        <Box ref={loadMoreRef} sx={{ py: 1.5 }}>
+                            {loadingMore.public ? (
+                                <Typography variant="caption" color="text.secondary" sx={{ display: 'block', textAlign: 'center' }}>
+                                    Memuat postingan terbaru...
+                                </Typography>
+                            ) : !hasMore.public ? (
+                                <Typography variant="caption" color="text.disabled" sx={{ display: 'block', textAlign: 'center' }}>
+                                    Sudah paling bawah.
+                                </Typography>
+                            ) : null}
+                        </Box>
+                    ) : null}
                 </Box>
             )}
 

@@ -9,6 +9,8 @@ import Paper from '@mui/material/Paper';
 import Button from '@mui/material/Button';
 import IconButton from '@mui/material/IconButton';
 import TextField from '@mui/material/TextField';
+import Tooltip from '@mui/material/Tooltip';
+import InputAdornment from '@mui/material/InputAdornment';
 import Table from '@mui/material/Table';
 import TableBody from '@mui/material/TableBody';
 import TableCell from '@mui/material/TableCell';
@@ -16,11 +18,17 @@ import TableContainer from '@mui/material/TableContainer';
 import TableHead from '@mui/material/TableHead';
 import TableRow from '@mui/material/TableRow';
 import Chip from '@mui/material/Chip';
+import Badge from '@mui/material/Badge';
 import Alert from '@mui/material/Alert';
 import Snackbar from '@mui/material/Snackbar';
+import Dialog from '@mui/material/Dialog';
+import DialogTitle from '@mui/material/DialogTitle';
+import DialogContent from '@mui/material/DialogContent';
+import DialogActions from '@mui/material/DialogActions';
 import Switch from '@mui/material/Switch';
 import FormControlLabel from '@mui/material/FormControlLabel';
 import MenuItem from '@mui/material/MenuItem';
+import Pagination from '@mui/material/Pagination';
 import RefreshIcon from '@mui/icons-material/Refresh';
 import EditIcon from '@mui/icons-material/Edit';
 import CheckIcon from '@mui/icons-material/Check';
@@ -30,6 +38,8 @@ import PeopleIcon from '@mui/icons-material/People';
 import ReceiptLongIcon from '@mui/icons-material/ReceiptLong';
 import AttachMoneyIcon from '@mui/icons-material/AttachMoney';
 import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
+import PaymentIcon from '@mui/icons-material/Payments';
+import PersonAddAlt1Icon from '@mui/icons-material/PersonAddAlt1';
 
 export default function AdminPage() {
     const [activeTab, setActiveTab] = useState(0);
@@ -42,6 +52,11 @@ export default function AdminPage() {
 
     // Users state
     const [users, setUsers] = useState([]);
+    const [adminIdentifier, setAdminIdentifier] = useState('');
+    const [userEditOpen, setUserEditOpen] = useState(false);
+    const [userEditTarget, setUserEditTarget] = useState(null);
+    const [userEditBalance, setUserEditBalance] = useState('');
+    const [userEditActive, setUserEditActive] = useState(true);
 
     // Hosts state
     const [hosts, setHosts] = useState([]);
@@ -52,6 +67,9 @@ export default function AdminPage() {
     // Official posts state
     const [officialPosts, setOfficialPosts] = useState([]);
     const [newOfficialPost, setNewOfficialPost] = useState({ title: '', content: '', type: 'info' });
+    const [guideHelpDraft, setGuideHelpDraft] = useState({ title: 'Panduan & Bantuan', content: '' });
+    const [guideHelpSaving, setGuideHelpSaving] = useState(false);
+    const [guideHelpEditing, setGuideHelpEditing] = useState(false);
 
     // Banner state
     const [banners, setBanners] = useState([]);
@@ -62,6 +80,43 @@ export default function AdminPage() {
     // Stats
     const [stats, setStats] = useState({ users: 0, transactions: 0, revenue: 0 });
 
+    // Manual topup requests
+    const [topupRequests, setTopupRequests] = useState([]);
+    const [topupPage, setTopupPage] = useState(1);
+    const [topupPageSize] = useState(25);
+    const [topupTotalPages, setTopupTotalPages] = useState(0);
+    const [pendingTopupCount, setPendingTopupCount] = useState(0);
+
+    const formatIDRNumber = (value) => {
+        const n = typeof value === 'number' ? value : parseInt(String(value || '').replace(/[^0-9]/g, ''), 10);
+        const safe = Number.isFinite(n) ? n : 0;
+        return safe.toLocaleString('id-ID');
+    };
+
+    const formatDateTime = (dateStr) => {
+        if (!dateStr) return '-';
+        const d = new Date(dateStr);
+        if (Number.isNaN(d.getTime())) return '-';
+        return d.toLocaleString('id-ID', {
+            day: '2-digit',
+            month: 'short',
+            year: 'numeric',
+            hour: '2-digit',
+            minute: '2-digit',
+        });
+    };
+
+    const adminUsers = users.filter((u) => String(u.role || '').toLowerCase() === 'admin');
+    const clientUsers = users.filter((u) => String(u.role || '').toLowerCase() !== 'admin');
+    const guideHelpPost = officialPosts.find((p) => String(p?.type || '').toLowerCase() === 'guide_help') || null;
+    const regularOfficialPosts = officialPosts.filter((p) => String(p?.type || '').toLowerCase() !== 'guide_help');
+
+    // Topup decision dialog
+    const [topupDecisionOpen, setTopupDecisionOpen] = useState(false);
+    const [topupDecisionId, setTopupDecisionId] = useState(null);
+    const [topupDecisionStatus, setTopupDecisionStatus] = useState('approved');
+    const [topupDecisionReason, setTopupDecisionReason] = useState('');
+
     useEffect(() => {
         fetchPricing();
         fetchUsers();
@@ -69,7 +124,84 @@ export default function AdminPage() {
         fetchHosts();
         fetchBanners();
         fetchOfficialPosts();
+        fetchTopupRequests();
     }, []);
+
+    const fetchTopupRequests = async (page = 1) => {
+        try {
+            const res = await fetch(`/api/admin/topups?page=${page}&page_size=${topupPageSize}`);
+            if (res.ok) {
+                const data = await res.json();
+                if (Array.isArray(data)) {
+                    setTopupRequests(data);
+                    setPendingTopupCount(data.filter((t) => String(t?.status) === 'pending').length);
+                    setTopupPage(page);
+                    setTopupTotalPages(1);
+                } else {
+                    const items = Array.isArray(data?.items) ? data.items : [];
+                    setTopupRequests(items);
+                    setPendingTopupCount(Number(data?.pending_count || 0));
+                    setTopupPage(Number(data?.page || page));
+                    setTopupTotalPages(Number(data?.total_pages || 0));
+                }
+            }
+        } catch (err) {
+            console.error('Failed to fetch topup requests:', err);
+        }
+    };
+
+    const openTopupDecision = (id, status) => {
+        setTopupDecisionId(id);
+        setTopupDecisionStatus(status);
+        setTopupDecisionReason('');
+        setTopupDecisionOpen(true);
+    };
+
+    const closeTopupDecision = () => {
+        if (loading) return;
+        setTopupDecisionOpen(false);
+        setTopupDecisionId(null);
+        setTopupDecisionReason('');
+    };
+
+    const decideTopup = async () => {
+        const id = topupDecisionId;
+        const status = topupDecisionStatus;
+        const reason = (topupDecisionReason || '').trim();
+
+        if (!id) {
+            setMessage('Topup tidak valid.');
+            return;
+        }
+
+        if (status === 'rejected' && !reason) {
+            setMessage('Alasan penolakan wajib diisi.');
+            return;
+        }
+
+        setLoading(true);
+        try {
+            const res = await fetch('/api/admin/topups', {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ id, status, reason: reason || '' }),
+            });
+            if (!res.ok) {
+                const t = await res.text();
+                throw new Error(t || 'Gagal memproses topup');
+            }
+            setMessage(status === 'approved' ? 'Topup disetujui.' : 'Topup ditolak.');
+            closeTopupDecision();
+            fetchTopupRequests(topupPage);
+            fetchUsers();
+            fetchStats();
+        } catch (err) {
+            console.error(err);
+            setMessage(err.message || 'Terjadi kesalahan');
+        } finally {
+            setLoading(false);
+        }
+    };
 
     const fetchPricing = async () => {
         try {
@@ -86,7 +218,8 @@ export default function AdminPage() {
             const res = await fetch('/api/admin/users');
             if (res.ok) {
                 const data = await res.json();
-                setUsers(data);
+                const list = Array.isArray(data) ? data : [];
+                setUsers(list);
             }
         } catch (err) {
             console.error('Failed to fetch users:', err);
@@ -129,6 +262,16 @@ export default function AdminPage() {
         }
     };
 
+    useEffect(() => {
+        const guidePost = officialPosts.find((p) => String(p?.type || '').toLowerCase() === 'guide_help');
+        if (guidePost) {
+            setGuideHelpDraft({
+                title: String(guidePost.title || 'Panduan & Bantuan'),
+                content: String(guidePost.content || ''),
+            });
+        }
+    }, [officialPosts]);
+
     const fetchBanners = async () => {
         try {
             const res = await fetch('/api/admin/banners');
@@ -163,16 +306,125 @@ export default function AdminPage() {
         }
     };
 
-    const updateUserBalance = async (userId, amount) => {
+    const updateUserBalance = async (userId, balanceValue) => {
+        const parsed = parseInt(String(balanceValue || '').replace(/[^0-9-]/g, ''), 10);
+        if (!Number.isFinite(parsed)) {
+            setMessage('Saldo tidak valid');
+            return false;
+        }
         try {
             const res = await fetch('/api/admin/user/balance', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ user_id: userId, amount: parseInt(amount) }),
+                body: JSON.stringify({ user_id: userId, balance: parsed }),
             });
             if (res.ok) {
                 setMessage('Saldo berhasil diupdate!');
                 fetchUsers();
+                fetchStats();
+                return true;
+            } else {
+                const t = await res.text();
+                setMessage(t || 'Gagal update saldo');
+                return false;
+            }
+        } catch (err) {
+            setMessage('Error: ' + err.message);
+            return false;
+        }
+    };
+
+    const getUserDisplayName = (userRow) => {
+        const explicit = String(userRow?.name || '').trim();
+        if (explicit) return explicit;
+        const folder = String(userRow?.pikpak_folder_name || '').trim();
+        if (folder) return folder;
+        return String(userRow?.email || '').split('@')[0] || '-';
+    };
+
+    const openUserEditDialog = (userRow) => {
+        setUserEditTarget(userRow);
+        setUserEditBalance(String(userRow?.balance ?? 0));
+        setUserEditActive(!!userRow?.is_active);
+        setUserEditOpen(true);
+    };
+
+    const closeUserEditDialog = () => {
+        if (loading) return;
+        setUserEditOpen(false);
+        setUserEditTarget(null);
+        setUserEditBalance('');
+        setUserEditActive(true);
+    };
+
+    const saveUserEdit = async () => {
+        if (!userEditTarget?.id) return;
+
+        setLoading(true);
+        try {
+            const oldBalance = Number(userEditTarget.balance ?? 0);
+            const nextBalance = parseInt(String(userEditBalance || '').replace(/[^0-9-]/g, ''), 10);
+            if (!Number.isFinite(nextBalance)) {
+                setMessage('Saldo tidak valid');
+                return;
+            }
+
+            let changed = false;
+
+            if (nextBalance !== oldBalance) {
+                const balanceOk = await updateUserBalance(userEditTarget.id, userEditBalance);
+                if (!balanceOk) {
+                    return;
+                }
+                changed = true;
+            }
+
+            if (userEditActive !== !!userEditTarget.is_active) {
+                const res = await fetch('/api/admin/users', {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ user_id: userEditTarget.id, is_active: userEditActive }),
+                });
+                if (!res.ok) {
+                    const t = await res.text();
+                    setMessage(t || 'Gagal update status user');
+                    return;
+                }
+                changed = true;
+            }
+
+            if (!changed) {
+                setMessage('Tidak ada perubahan.');
+            } else {
+                setMessage('Data user berhasil diupdate');
+                fetchUsers();
+            }
+
+            closeUserEditDialog();
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    const promoteToAdmin = async () => {
+        const identifier = adminIdentifier.trim();
+        if (!identifier) {
+            setMessage('Isi email atau username terlebih dahulu');
+            return;
+        }
+        try {
+            const res = await fetch('/api/admin/users', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ identifier }),
+            });
+            if (res.ok) {
+                setMessage('User berhasil dijadikan admin');
+                setAdminIdentifier('');
+                fetchUsers();
+            } else {
+                const t = await res.text();
+                setMessage(t || 'Gagal menjadikan admin');
             }
         } catch (err) {
             setMessage('Error: ' + err.message);
@@ -426,6 +678,52 @@ export default function AdminPage() {
         }
     };
 
+    const saveGuideHelpPost = async () => {
+        const title = String(guideHelpDraft.title || '').trim();
+        const content = String(guideHelpDraft.content || '').trim();
+        if (!title || !content) {
+            setMessage('Judul dan konten Panduan & Bantuan wajib diisi');
+            return;
+        }
+
+        const existing = officialPosts.find((p) => String(p?.type || '').toLowerCase() === 'guide_help');
+        setGuideHelpSaving(true);
+        try {
+            if (existing?.id) {
+                const res = await fetch('/api/admin/posts/official', {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        id: existing.id,
+                        title,
+                        content,
+                        is_active: true,
+                    }),
+                });
+                if (!res.ok) throw new Error('Gagal update Panduan & Bantuan');
+            } else {
+                const res = await fetch('/api/admin/posts/official', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        title,
+                        content,
+                        type: 'guide_help',
+                    }),
+                });
+                if (!res.ok) throw new Error('Gagal membuat Panduan & Bantuan');
+            }
+
+            setMessage('Panduan & Bantuan berhasil disimpan');
+            setGuideHelpEditing(false);
+            fetchOfficialPosts();
+        } catch (err) {
+            setMessage(err.message || 'Terjadi kesalahan saat menyimpan Panduan & Bantuan');
+        } finally {
+            setGuideHelpSaving(false);
+        }
+    };
+
     return (
         <Box sx={{ maxWidth: 936, margin: 'auto' }}>
             {/* Stats Cards */}
@@ -435,7 +733,7 @@ export default function AdminPage() {
                         <PeopleIcon color="primary" />
                         <Box>
                             <Typography variant="caption" color="text.secondary">Total Users</Typography>
-                            <Typography variant="h5" fontWeight={700}>{stats.users || users.length}</Typography>
+                            <Typography variant="h6" fontWeight={700}>{stats.users || users.length}</Typography>
                         </Box>
                     </CardContent>
                 </Card>
@@ -444,7 +742,7 @@ export default function AdminPage() {
                         <ReceiptLongIcon color="primary" />
                         <Box>
                             <Typography variant="caption" color="text.secondary">Transaksi</Typography>
-                            <Typography variant="h5" fontWeight={700}>{stats.transactions || 0}</Typography>
+                            <Typography variant="h6" fontWeight={700}>{stats.transactions || 0}</Typography>
                         </Box>
                     </CardContent>
                 </Card>
@@ -452,10 +750,8 @@ export default function AdminPage() {
                     <CardContent sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
                         <AttachMoneyIcon color="success" />
                         <Box>
-                            <Typography variant="caption" color="text.secondary">Revenue</Typography>
-                            <Typography variant="h5" fontWeight={700} color="success.main">
-                                Rp {(stats.revenue || 0).toLocaleString()}
-                            </Typography>
+                            <Typography variant="caption" color="text.secondary">Revenue (IDR)</Typography>
+                            <Typography variant="h6" fontWeight={700}>{formatIDRNumber(stats.revenue || 0)}</Typography>
                         </Box>
                     </CardContent>
                 </Card>
@@ -473,6 +769,14 @@ export default function AdminPage() {
                     <Tab label="Available Host" sx={{ textTransform: 'none' }} />
                     <Tab label="Banner" sx={{ textTransform: 'none' }} />
                     <Tab label="Informasi Resmi" sx={{ textTransform: 'none' }} />
+                    <Tab
+                        label={
+                            <Badge color="warning" badgeContent={pendingTopupCount} invisible={pendingTopupCount <= 0}>
+                                <span>Top Up</span>
+                            </Badge>
+                        }
+                        sx={{ textTransform: 'none' }}
+                    />
                 </Tabs>
 
                 {/* Pricing Tab */}
@@ -513,8 +817,8 @@ export default function AdminPage() {
                                                             onChange={(e) => setEditingPricing({ ...editingPricing, price_per_unit: parseInt(e.target.value || '0') })}
                                                         />
                                                     ) : (
-                                                        <Typography variant="body2" color="primary.main" fontWeight={600}>
-                                                            Rp {p.price_per_unit?.toLocaleString()}
+                                                        <Typography variant="body2" color="primary.main" fontWeight={500}>
+                                                            {formatIDRNumber(p.price_per_unit || 0)}
                                                         </Typography>
                                                     )}
                                                 </TableCell>
@@ -583,71 +887,146 @@ export default function AdminPage() {
                             </IconButton>
                         </Box>
 
-                        <TableContainer>
-                            <Table size="small">
-                                <TableHead>
-                                    <TableRow>
-                                        <TableCell sx={{ fontWeight: 600 }}>ID</TableCell>
-                                        <TableCell sx={{ fontWeight: 600 }}>Email</TableCell>
-                                        <TableCell sx={{ fontWeight: 600 }}>Saldo</TableCell>
-                                        <TableCell sx={{ fontWeight: 600 }}>Folder</TableCell>
-                                        <TableCell sx={{ fontWeight: 600 }}>Aksi</TableCell>
-                                    </TableRow>
-                                </TableHead>
-                                <TableBody>
-                                    {users.map((user) => (
-                                        <TableRow key={user.id} hover>
-                                            <TableCell>{user.id}</TableCell>
-                                            <TableCell>
-                                                <Typography variant="body2" fontWeight={500}>{user.email}</Typography>
-                                            </TableCell>
-                                            <TableCell>
-                                                <Typography variant="body2" color="success.main" fontWeight={500}>
-                                                    Rp {user.balance?.toLocaleString()}
-                                                </Typography>
-                                            </TableCell>
-                                            <TableCell>
-                                                <Typography variant="caption" sx={{ fontFamily: 'monospace' }}>
-                                                    {user.pikpak_folder_name || '-'}
-                                                </Typography>
-                                            </TableCell>
-                                            <TableCell>
-                                                <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-                                                    <TextField
-                                                        type="number"
-                                                        placeholder="Amount"
-                                                        size="small"
-                                                        id={`balance-${user.id}`}
-                                                        sx={{ width: 100 }}
-                                                        inputProps={{ style: { fontSize: 12, padding: '6px 8px' } }}
-                                                    />
-                                                    <Button
-                                                        variant="contained"
-                                                        size="small"
-                                                        sx={{ minWidth: 'auto', fontSize: 12 }}
-                                                        onClick={() => {
-                                                            const input = document.getElementById(`balance-${user.id}`);
-                                                            if (input.value) updateUserBalance(user.id, input.value);
-                                                        }}
-                                                    >
-                                                        +/-
-                                                    </Button>
-                                                </Box>
-                                            </TableCell>
-                                        </TableRow>
-                                    ))}
-                                    {users.length === 0 && (
+                        <Paper variant="outlined" sx={{ p: 2, mb: 2, borderRadius: 0 }}>
+                            <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 1.5, mb: 1.5, flexWrap: 'wrap' }}>
+                                <Typography variant="subtitle2" fontWeight={700}>
+                                    Admin
+                                </Typography>
+                                <Chip size="small" color="primary" variant="outlined" label={`${adminUsers.length} admin`} />
+                            </Box>
+                            <Box sx={{ display: 'flex', gap: 1, mb: 1.75, maxWidth: 620 }}>
+                                <TextField
+                                    size="small"
+                                    fullWidth
+                                    placeholder="Tambah admin via email / username"
+                                    value={adminIdentifier}
+                                    onChange={(e) => setAdminIdentifier(e.target.value)}
+                                    InputProps={{
+                                        startAdornment: (
+                                            <InputAdornment position="start">
+                                                <PersonAddAlt1Icon fontSize="small" />
+                                            </InputAdornment>
+                                        ),
+                                    }}
+                                />
+                                <Tooltip title="Tambah admin">
+                                    <span>
+                                        <IconButton color="primary" onClick={promoteToAdmin}>
+                                            <PersonAddAlt1Icon />
+                                        </IconButton>
+                                    </span>
+                                </Tooltip>
+                            </Box>
+
+                            <TableContainer>
+                                <Table size="small">
+                                    <TableHead>
                                         <TableRow>
-                                            <TableCell colSpan={5} sx={{ textAlign: 'center', py: 5 }}>
-                                                <Typography variant="body2" color="text.disabled">
-                                                    Belum ada user terdaftar
-                                                </Typography>
-                                            </TableCell>
+                                            <TableCell sx={{ fontWeight: 600 }}>ID</TableCell>
+                                            <TableCell sx={{ fontWeight: 600 }}>Email</TableCell>
+                                            <TableCell sx={{ fontWeight: 600 }}>Status</TableCell>
+                                            <TableCell sx={{ fontWeight: 600 }}>Saldo</TableCell>
+                                            <TableCell align="right" sx={{ fontWeight: 600, width: 72 }}>Aksi</TableCell>
                                         </TableRow>
-                                    )}
-                                </TableBody>
-                            </Table>
-                        </TableContainer>
+                                    </TableHead>
+                                    <TableBody>
+                                        {adminUsers.map((user) => (
+                                            <TableRow key={`admin-${user.id}`} hover>
+                                                <TableCell>{user.id}</TableCell>
+                                                <TableCell>
+                                                    <Typography variant="body2" fontWeight={600}>{user.email}</Typography>
+                                                </TableCell>
+                                                <TableCell>
+                                                    <Chip size="small" label={user.is_active ? 'Aktif' : 'Nonaktif'} color={user.is_active ? 'success' : 'default'} variant={user.is_active ? 'filled' : 'outlined'} />
+                                                </TableCell>
+                                                <TableCell>
+                                                    <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 1 }}>
+                                                        <Typography variant="body2" color="primary.main" fontWeight={600}>
+                                                            {formatIDRNumber(user.balance || 0)}
+                                                        </Typography>
+                                                    </Box>
+                                                </TableCell>
+                                                <TableCell align="right" sx={{ width: 72 }}>
+                                                    <Box sx={{ display: 'inline-flex', justifyContent: 'flex-end' }}>
+                                                        <Tooltip title="Edit user">
+                                                            <IconButton size="small" color="primary" onClick={() => openUserEditDialog(user)}>
+                                                                <EditIcon fontSize="small" />
+                                                            </IconButton>
+                                                        </Tooltip>
+                                                    </Box>
+                                                </TableCell>
+                                            </TableRow>
+                                        ))}
+                                        {adminUsers.length === 0 && (
+                                            <TableRow>
+                                                <TableCell colSpan={5} sx={{ textAlign: 'center', py: 3 }}>
+                                                    <Typography variant="body2" color="text.disabled">Belum ada admin.</Typography>
+                                                </TableCell>
+                                            </TableRow>
+                                        )}
+                                    </TableBody>
+                                </Table>
+                            </TableContainer>
+                        </Paper>
+
+                        <Paper variant="outlined" sx={{ p: 2, borderRadius: 0 }}>
+                            <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 1.5, mb: 1.5, flexWrap: 'wrap' }}>
+                                <Typography variant="subtitle2" fontWeight={700}>
+                                    Client
+                                </Typography>
+                                <Chip size="small" color="default" variant="outlined" label={`${clientUsers.length} client`} />
+                            </Box>
+
+                            <TableContainer>
+                                <Table size="small">
+                                    <TableHead>
+                                        <TableRow>
+                                            <TableCell sx={{ fontWeight: 600 }}>ID</TableCell>
+                                            <TableCell sx={{ fontWeight: 600 }}>Email</TableCell>
+                                            <TableCell sx={{ fontWeight: 600 }}>Status</TableCell>
+                                            <TableCell sx={{ fontWeight: 600 }}>Saldo</TableCell>
+                                            <TableCell align="right" sx={{ fontWeight: 600, width: 72 }}>Aksi</TableCell>
+                                        </TableRow>
+                                    </TableHead>
+                                    <TableBody>
+                                        {clientUsers.map((user) => (
+                                            <TableRow key={`client-${user.id}`} hover>
+                                                <TableCell>{user.id}</TableCell>
+                                                <TableCell>
+                                                    <Typography variant="body2" fontWeight={500}>{user.email}</Typography>
+                                                </TableCell>
+                                                <TableCell>
+                                                    <Chip size="small" label={user.is_active ? 'Aktif' : 'Nonaktif'} color={user.is_active ? 'success' : 'default'} variant={user.is_active ? 'filled' : 'outlined'} />
+                                                </TableCell>
+                                                <TableCell>
+                                                    <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 1 }}>
+                                                        <Typography variant="body2" color="success.main" fontWeight={500}>
+                                                            {formatIDRNumber(user.balance || 0)}
+                                                        </Typography>
+                                                    </Box>
+                                                </TableCell>
+                                                <TableCell align="right" sx={{ width: 72 }}>
+                                                    <Box sx={{ display: 'inline-flex', justifyContent: 'flex-end' }}>
+                                                        <Tooltip title="Edit user">
+                                                            <IconButton size="small" color="primary" onClick={() => openUserEditDialog(user)}>
+                                                                <EditIcon fontSize="small" />
+                                                            </IconButton>
+                                                        </Tooltip>
+                                                    </Box>
+                                                </TableCell>
+                                            </TableRow>
+                                        ))}
+                                        {clientUsers.length === 0 && (
+                                            <TableRow>
+                                                <TableCell colSpan={5} sx={{ textAlign: 'center', py: 3 }}>
+                                                    <Typography variant="body2" color="text.disabled">Belum ada client.</Typography>
+                                                </TableCell>
+                                            </TableRow>
+                                        )}
+                                    </TableBody>
+                                </Table>
+                            </TableContainer>
+                        </Paper>
                     </Box>
                 )}
 
@@ -895,6 +1274,77 @@ export default function AdminPage() {
 
                         <Card variant="outlined">
                             <CardContent sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}>
+                                <Typography variant="body2" fontWeight={700}>Panduan & Bantuan</Typography>
+                                {!guideHelpEditing ? (
+                                    <>
+                                        <Typography variant="body2" color="text.secondary" sx={{ whiteSpace: 'pre-wrap', lineHeight: 1.75 }}>
+                                            {guideHelpPost?.content || 'Belum ada konten panduan.'}
+                                        </Typography>
+                                        <Box>
+                                            <Button
+                                                variant="outlined"
+                                                size="small"
+                                                onClick={() => {
+                                                    setGuideHelpDraft({
+                                                        title: String(guideHelpPost?.title || 'Panduan & Bantuan'),
+                                                        content: String(guideHelpPost?.content || ''),
+                                                    });
+                                                    setGuideHelpEditing(true);
+                                                }}
+                                            >
+                                                Edit Panduan & Bantuan
+                                            </Button>
+                                        </Box>
+                                    </>
+                                ) : (
+                                    <>
+                                        <TextField
+                                            size="small"
+                                            label="Judul Panduan"
+                                            value={guideHelpDraft.title}
+                                            onChange={(e) => setGuideHelpDraft((prev) => ({ ...prev, title: e.target.value }))}
+                                        />
+                                        <TextField
+                                            multiline
+                                            minRows={4}
+                                            size="small"
+                                            label="Konten Panduan"
+                                            value={guideHelpDraft.content}
+                                            onChange={(e) => setGuideHelpDraft((prev) => ({ ...prev, content: e.target.value }))}
+                                        />
+                                        <Box sx={{ display: 'flex', gap: 1 }}>
+                                            <Button variant="contained" size="small" onClick={saveGuideHelpPost} disabled={guideHelpSaving || loading}>
+                                                {guideHelpSaving ? 'Menyimpan...' : 'Simpan Panduan & Bantuan'}
+                                            </Button>
+                                            <Button
+                                                variant="outlined"
+                                                size="small"
+                                                onClick={() => {
+                                                    setGuideHelpEditing(false);
+                                                    setGuideHelpDraft({
+                                                        title: String(guideHelpPost?.title || 'Panduan & Bantuan'),
+                                                        content: String(guideHelpPost?.content || ''),
+                                                    });
+                                                }}
+                                                disabled={guideHelpSaving}
+                                            >
+                                                Batal
+                                            </Button>
+                                        </Box>
+                                    </>
+                                )}
+                                <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 1.5, flexWrap: 'wrap' }}>
+                                    <Typography variant="caption" color="text.secondary">
+                                        Tidak bisa dihapus. Bisa diedit kapan saja.
+                                        {' '}
+                                        Updated at: {guideHelpPost ? formatDateTime(guideHelpPost.updated_at) : '-'}
+                                    </Typography>
+                                </Box>
+                            </CardContent>
+                        </Card>
+
+                        <Card variant="outlined">
+                            <CardContent sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}>
                                 <Typography variant="body2" fontWeight={600}>Buat Informasi Baru</Typography>
                                 <TextField
                                     size="small"
@@ -945,11 +1395,12 @@ export default function AdminPage() {
                                         <TableCell sx={{ fontWeight: 600 }}>Judul</TableCell>
                                         <TableCell sx={{ fontWeight: 600 }}>Tipe</TableCell>
                                         <TableCell sx={{ fontWeight: 600 }}>Status</TableCell>
+                                        <TableCell sx={{ fontWeight: 600 }}>Updated At</TableCell>
                                         <TableCell sx={{ fontWeight: 600 }}>Aksi</TableCell>
                                     </TableRow>
                                 </TableHead>
                                 <TableBody>
-                                    {officialPosts.map((post) => (
+                                    {regularOfficialPosts.map((post) => (
                                         <TableRow key={post.id} hover>
                                             <TableCell>
                                                 <Typography variant="body2" fontWeight={600}>{post.title}</Typography>
@@ -967,6 +1418,11 @@ export default function AdminPage() {
                                                 />
                                             </TableCell>
                                             <TableCell>
+                                                <Typography variant="caption" color="text.secondary">
+                                                    {formatDateTime(post.updated_at)}
+                                                </Typography>
+                                            </TableCell>
+                                            <TableCell>
                                                 <Box sx={{ display: 'flex', gap: 0.5 }}>
                                                     <Button
                                                         size="small"
@@ -982,12 +1438,263 @@ export default function AdminPage() {
                                             </TableCell>
                                         </TableRow>
                                     ))}
+                                    {regularOfficialPosts.length === 0 && (
+                                        <TableRow>
+                                            <TableCell colSpan={5} sx={{ textAlign: 'center', py: 3 }}>
+                                                <Typography variant="body2" color="text.secondary">Belum ada informasi resmi selain Panduan & Bantuan.</Typography>
+                                            </TableCell>
+                                        </TableRow>
+                                    )}
                                 </TableBody>
                             </Table>
                         </TableContainer>
                     </Box>
                 )}
+
+                {/* Top Up Tab */}
+                {activeTab === 5 && (
+                    <Box sx={{ p: 3 }}>
+                        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 2 }}>
+                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                                <Typography variant="subtitle1" fontWeight={600}>
+                                    Permintaan Top Up
+                                </Typography>
+                            </Box>
+                            <IconButton size="small" onClick={() => fetchTopupRequests(topupPage)}>
+                                <RefreshIcon fontSize="small" />
+                            </IconButton>
+                        </Box>
+
+                        <Alert severity="info" sx={{ mb: 2 }}>
+                            Pending = belum diputus. Semua keputusan akan mengirim notifikasi ke user.
+                        </Alert>
+
+                        <TableContainer>
+                            <Table size="small">
+                                <TableHead>
+                                    <TableRow>
+                                        <TableCell sx={{ fontWeight: 600 }}>ID</TableCell>
+                                        <TableCell sx={{ fontWeight: 600 }}>Serial</TableCell>
+                                        <TableCell sx={{ fontWeight: 600 }}>Tanggal</TableCell>
+                                        <TableCell sx={{ fontWeight: 600 }}>User</TableCell>
+                                        <TableCell sx={{ fontWeight: 600 }}>Nominal</TableCell>
+                                        <TableCell sx={{ fontWeight: 600 }}>Metode</TableCell>
+                                        <TableCell sx={{ fontWeight: 600 }}>Status</TableCell>
+                                        <TableCell sx={{ fontWeight: 600 }}>Alasan</TableCell>
+                                        <TableCell sx={{ fontWeight: 600, width: 180 }}>Aksi</TableCell>
+                                    </TableRow>
+                                </TableHead>
+                                <TableBody>
+                                    {topupRequests.map((t) => (
+                                        <TableRow key={t.id} hover>
+                                            <TableCell>{t.id}</TableCell>
+                                            <TableCell>
+                                                <Typography
+                                                    variant="caption"
+                                                    sx={{
+                                                        fontFamily:
+                                                            'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
+                                                    }}
+                                                >
+                                                    {t.serial || '-'}
+                                                </Typography>
+                                            </TableCell>
+                                            <TableCell>
+                                                <Typography variant="caption" color="text.secondary">
+                                                    {formatDateTime(t.created_at)}
+                                                </Typography>
+                                            </TableCell>
+                                            <TableCell>
+                                                <Typography variant="body2" fontWeight={600}>{t.username || `user_id=${t.user_id}`}</Typography>
+                                                <Typography variant="caption" color="text.secondary">user_id={t.user_id}</Typography>
+                                            </TableCell>
+                                            <TableCell>
+                                                <Typography variant="body2" fontWeight={500} color="primary.main">
+                                                    {formatIDRNumber(Number(t.amount || 0))}
+                                                </Typography>
+                                            </TableCell>
+                                            <TableCell>
+                                                <Typography variant="body2">{t.payment_method || '-'}</Typography>
+                                                <Typography variant="caption" color="text.secondary">{t.payment_account || ''}</Typography>
+                                            </TableCell>
+                                            <TableCell>
+                                                {t.status === 'approved' ? (
+                                                    <Chip size="small" label="approved" color="success" />
+                                                ) : t.status === 'rejected' ? (
+                                                    <Chip size="small" label="rejected" color="error" />
+                                                ) : (
+                                                    <Chip size="small" label="pending" color="warning" variant="outlined" />
+                                                )}
+                                            </TableCell>
+                                            <TableCell>
+                                                <Typography variant="caption" color="text.secondary">
+                                                    {t.admin_reason || '-'}
+                                                </Typography>
+                                            </TableCell>
+                                            <TableCell>
+                                                {t.status === 'pending' ? (
+                                                    <Box sx={{ display: 'flex', gap: 1 }}>
+                                                        <Button
+                                                            size="small"
+                                                            variant="contained"
+                                                            color="success"
+                                                            disabled={loading}
+                                                            onClick={() => openTopupDecision(t.id, 'approved')}
+                                                            sx={{ textTransform: 'none' }}
+                                                        >
+                                                            ACC
+                                                        </Button>
+                                                        <Button
+                                                            size="small"
+                                                            variant="outlined"
+                                                            color="error"
+                                                            disabled={loading}
+                                                            onClick={() => openTopupDecision(t.id, 'rejected')}
+                                                            sx={{ textTransform: 'none' }}
+                                                        >
+                                                            Reject
+                                                        </Button>
+                                                    </Box>
+                                                ) : (
+                                                    <Typography variant="caption" color="text.disabled">Selesai</Typography>
+                                                )}
+                                            </TableCell>
+                                        </TableRow>
+                                    ))}
+
+                                    {topupRequests.length === 0 && (
+                                        <TableRow>
+                                            <TableCell colSpan={9} sx={{ textAlign: 'center', py: 4 }}>
+                                                <Typography variant="body2" color="text.secondary">
+                                                    Belum ada permintaan top up.
+                                                </Typography>
+                                            </TableCell>
+                                        </TableRow>
+                                    )}
+                                </TableBody>
+                            </Table>
+                        </TableContainer>
+
+                        <Box sx={{ mt: 2, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 2, flexWrap: 'wrap' }}>
+                            <Typography variant="caption" color="text.secondary">
+                                Menampilkan {topupRequests.length} data per halaman ({topupPageSize}/page). Pending selalu di urutan teratas.
+                            </Typography>
+                            <Pagination
+                                size="small"
+                                color="primary"
+                                page={topupPage}
+                                count={Math.max(1, topupTotalPages)}
+                                onChange={(_, pageValue) => fetchTopupRequests(pageValue)}
+                                disabled={loading || topupTotalPages <= 1}
+                            />
+                        </Box>
+                    </Box>
+                )}
             </Paper>
+
+            <Dialog open={topupDecisionOpen} onClose={closeTopupDecision} maxWidth="xs" fullWidth>
+                <DialogTitle sx={{ fontWeight: 800 }}>
+                    {topupDecisionStatus === 'approved' ? 'ACC Top Up' : 'Reject Top Up'}
+                </DialogTitle>
+                <DialogContent sx={{ pt: 1 }}>
+                    <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
+                        ID: <strong>{topupDecisionId || '-'}</strong>
+                    </Typography>
+                    <TextField
+                        autoFocus
+                        fullWidth
+                        size="small"
+                        label={topupDecisionStatus === 'approved' ? 'Alasan (opsional)' : 'Alasan penolakan (wajib)'}
+                        value={topupDecisionReason}
+                        onChange={(e) => setTopupDecisionReason(e.target.value)}
+                        multiline
+                        minRows={2}
+                        placeholder={topupDecisionStatus === 'approved' ? 'Contoh: sudah masuk' : 'Contoh: bukti transfer tidak sesuai'}
+                        disabled={loading}
+                    />
+                    <Alert severity={topupDecisionStatus === 'approved' ? 'info' : 'warning'} sx={{ mt: 2 }}>
+                        Keputusan akan mengubah status top up dan mengirim notifikasi ke user.
+                    </Alert>
+                </DialogContent>
+                <DialogActions sx={{ px: 3, pb: 2.5 }}>
+                    <Button onClick={closeTopupDecision} variant="outlined" disabled={loading} sx={{ textTransform: 'none' }}>
+                        Batal
+                    </Button>
+                    <Button
+                        onClick={decideTopup}
+                        variant="contained"
+                        color={topupDecisionStatus === 'approved' ? 'success' : 'error'}
+                        disabled={loading}
+                        sx={{ textTransform: 'none', fontWeight: 800 }}
+                    >
+                        {topupDecisionStatus === 'approved' ? 'ACC' : 'Reject'}
+                    </Button>
+                </DialogActions>
+            </Dialog>
+
+            <Dialog open={userEditOpen} onClose={closeUserEditDialog} maxWidth="sm" fullWidth>
+                <DialogTitle sx={{ fontWeight: 800 }}>Edit user</DialogTitle>
+                <DialogContent sx={{ pt: 1 }}>
+                    <Box sx={{ display: 'grid', gap: 1.25 }}>
+                        <TextField
+                            fullWidth
+                            size="small"
+                            label="Email"
+                            value={userEditTarget?.email || ''}
+                            disabled
+                        />
+                        <TextField
+                            fullWidth
+                            size="small"
+                            label="Nama"
+                            value={getUserDisplayName(userEditTarget)}
+                            disabled
+                        />
+                    </Box>
+
+                    <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', sm: '1fr 1fr' }, gap: 1.25, mt: 1.5 }}>
+                        <TextField
+                            fullWidth
+                            size="small"
+                            type="number"
+                            label="Saldo"
+                            value={userEditBalance}
+                            onChange={(e) => setUserEditBalance(e.target.value)}
+                            InputProps={{
+                                startAdornment: <InputAdornment position="start">IDR</InputAdornment>,
+                            }}
+                        />
+                        <FormControlLabel
+                            sx={{ m: 0, px: 1, border: '1px solid', borderColor: 'divider', minHeight: 40 }}
+                            control={<Switch checked={userEditActive} onChange={(e) => setUserEditActive(e.target.checked)} size="small" />}
+                            label={userEditActive ? 'Status: Aktif' : 'Status: Nonaktif'}
+                        />
+                    </Box>
+
+                    <Paper variant="outlined" sx={{ mt: 1.75, p: 1.5, borderRadius: 0 }}>
+                        <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.5 }}>
+                            Info akun
+                        </Typography>
+                        <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', sm: '1fr 1fr' }, gap: 0.75 }}>
+                            <Typography variant="caption">ID: <strong>{userEditTarget?.id || '-'}</strong></Typography>
+                            <Typography variant="caption">Role: <strong>{userEditTarget?.role || '-'}</strong></Typography>
+                            <Typography variant="caption">Dibuat: <strong>{formatDateTime(userEditTarget?.created_at)}</strong></Typography>
+                            <Typography variant="caption">Folder: <strong>{userEditTarget?.pikpak_folder_name || '-'}</strong></Typography>
+                            <Typography variant="caption">Total download: <strong>{formatIDRNumber(userEditTarget?.total_downloads || 0)}</strong></Typography>
+                            <Typography variant="caption">Torrent: <strong>{formatIDRNumber(userEditTarget?.torrent_count || 0)}</strong></Typography>
+                            <Typography variant="caption">URL Premium: <strong>{formatIDRNumber(userEditTarget?.premium_count || 0)}</strong></Typography>
+                        </Box>
+                    </Paper>
+                </DialogContent>
+                <DialogActions sx={{ px: 3, pb: 2.5 }}>
+                    <Button onClick={closeUserEditDialog} variant="outlined" sx={{ textTransform: 'none' }}>
+                        Batal
+                    </Button>
+                    <Button onClick={saveUserEdit} variant="contained" disabled={loading} sx={{ textTransform: 'none', fontWeight: 700 }}>
+                        Simpan Perubahan
+                    </Button>
+                </DialogActions>
+            </Dialog>
 
             {/* Snackbar for messages */}
             <Snackbar

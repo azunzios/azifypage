@@ -65,8 +65,9 @@ func AutoMigrate() error {
 		&Banner{},
 		&OfficialPost{},
 		&UserPost{},
-			&UserPostReply{},
-			&HostAvailability{},
+		&UserPostReply{},
+		&UserUsage{},
+		&HostAvailability{},
 	)
 	if err != nil {
 		return fmt.Errorf("failed to auto-migrate: %w", err)

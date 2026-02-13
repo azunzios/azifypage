@@ -2,10 +2,13 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"image"
 	_ "image/gif"
@@ -16,21 +19,30 @@ import (
 	"math"
 	"mime/multipart"
 	"net/http"
+	"net/smtp"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/youming-ai/pikpak-downloader/internal/auth"
 	"github.com/youming-ai/pikpak-downloader/internal/database"
 	"github.com/youming-ai/pikpak-downloader/internal/pikpak"
 	"github.com/youming-ai/pikpak-downloader/internal/realdebrid"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 var globalClient *pikpak.Client
 var rdClient *realdebrid.Client
+var telegramBotToken string
+var telegramAdminChatIDs map[int64]struct{}
+var forgotPasswordCooldownMu sync.Mutex
+var forgotPasswordCooldown = make(map[string]time.Time)
+var premiumAPISemaphore = make(chan struct{}, 1)
 
 // generateFolderName creates a folder name from email: username_XXXX (4 random hex chars)
 func generateFolderName(email string) string {
@@ -66,6 +78,8 @@ func loadEnv() {
 
 func main() {
 	loadEnv()
+	telegramBotToken = strings.TrimSpace(os.Getenv("TELEGRAM_BOT_TOKEN"))
+	telegramAdminChatIDs = parseTelegramAdminChatIDs()
 
 	port := os.Getenv("PORT")
 	if port == "" {
@@ -102,7 +116,13 @@ func main() {
 	}
 
 	// Initialize Real-Debrid client
-	rdClient = realdebrid.NewClient("")
+	rdAPIKey := strings.TrimSpace(os.Getenv("REALDEBRID_API_KEY"))
+	rdClient = realdebrid.NewClient(rdAPIKey)
+	if rdAPIKey == "" {
+		log.Println("ℹ️ REALDEBRID_API_KEY belum diatur. Mode host premium masih manual.")
+	} else {
+		log.Println("✅ REALDEBRID_API_KEY terdeteksi. Mode host premium otomatis aktif.")
+	}
 
 	// PikPak Client
 	username := os.Getenv("PIKPAK_USERNAME")
@@ -128,6 +148,9 @@ func main() {
 	http.HandleFunc("/api/auth/google/callback", handleGoogleCallback)
 	http.HandleFunc("/api/auth/login", handleManualLogin)
 	http.HandleFunc("/api/auth/register", handleRegister)
+	http.HandleFunc("/api/auth/verify-email", handleVerifyEmail)
+	http.HandleFunc("/api/auth/forgot-password", handleForgotPassword)
+	http.HandleFunc("/api/auth/reset-password", handleResetPassword)
 	http.HandleFunc("/api/auth/logout", handleLogout)
 	http.HandleFunc("/api/auth/me", handleAuthMe)
 
@@ -139,8 +162,10 @@ func main() {
 
 	// User & Database API Endpoints (protected)
 	http.HandleFunc("/api/user", auth.RequireAuth(handleGetUser))
+	http.HandleFunc("/api/user/email", auth.RequireAuth(handleSendVerificationEmail))
 	http.HandleFunc("/api/notifications", auth.RequireAuth(handleNotifications))
 	http.HandleFunc("/api/transactions", auth.RequireAuth(handleTransactions))
+	http.HandleFunc("/api/topups", auth.RequireAuth(handleTopUps))
 	http.HandleFunc("/api/hosts", handleGetHosts)     // Public
 	http.HandleFunc("/api/pricing", handleGetPricing) // Public
 	http.HandleFunc("/api/premium/request", auth.RequireAuth(handlePremiumRequest))
@@ -149,7 +174,9 @@ func main() {
 	http.HandleFunc("/api/admin/users", auth.RequireAdmin(handleAdminUsers))
 	http.HandleFunc("/api/admin/pricing", auth.RequireAdmin(handleAdminPricing))
 	http.HandleFunc("/api/admin/stats", auth.RequireAdmin(handleAdminStats))
+	http.HandleFunc("/api/admin/monitoring", auth.RequireAdmin(handleAdminMonitoring))
 	http.HandleFunc("/api/admin/user/balance", auth.RequireAdmin(handleAdminUserBalance))
+	http.HandleFunc("/api/admin/topups", auth.RequireAdmin(handleAdminTopUps))
 	http.HandleFunc("/api/admin/hosts", auth.RequireAdmin(handleAdminHosts))
 	http.HandleFunc("/api/admin/banners", auth.RequireAdmin(handleAdminBanners))
 	http.HandleFunc("/api/admin/banners/upload-image", auth.RequireAdmin(handleAdminBannerImageUpload))
@@ -183,6 +210,7 @@ func main() {
 	})
 
 	log.Printf("Server starting on http://localhost:%s", port)
+	startTelegramAdminBotListener()
 	if err := http.ListenAndServe(":"+port, nil); err != nil {
 		log.Fatal(err)
 	}
@@ -248,11 +276,15 @@ func handleGoogleCallback(w http.ResponseWriter, r *http.Request) {
 		// Create new user
 		user = database.User{
 			Email:            googleUser.Email,
+			EmailVerified:    true,
 			Balance:          0,
 			PikPakFolderID:   folderID,
 			PikPakFolderName: folderName,
 		}
 		database.DB.Create(&user)
+	} else if !user.EmailVerified {
+		database.DB.Model(&user).Update("email_verified", true)
+		user.EmailVerified = true
 
 		// Welcome notification
 		notification := database.Notification{
@@ -264,6 +296,10 @@ func handleGoogleCallback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Create session
+	if !user.IsActive {
+		http.Error(w, "Akun dinonaktifkan", http.StatusForbidden)
+		return
+	}
 	sessionID := auth.CreateSession(user.ID, user.Email, googleUser.Name, googleUser.Picture, user.Role)
 	auth.SetSessionCookie(w, sessionID)
 
@@ -310,6 +346,13 @@ func handleManualLogin(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusUnauthorized)
 		json.NewEncoder(w).Encode(map[string]string{"error": "Email atau password salah"})
+		return
+	}
+
+	if !user.IsActive {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Akun dinonaktifkan"})
 		return
 	}
 
@@ -388,6 +431,7 @@ func handleRegister(w http.ResponseWriter, r *http.Request) {
 	user := database.User{
 		Email:            req.Email,
 		Password:         hashedPassword,
+		IsActive:         true,
 		Balance:          0,
 		PikPakFolderID:   folderID,
 		PikPakFolderName: folderName,
@@ -439,9 +483,25 @@ func handleAuthMe(w http.ResponseWriter, r *http.Request) {
 
 	var user database.User
 	database.DB.First(&user, session.UserID)
+	if !user.IsActive {
+		cookie, err := r.Cookie(auth.SessionCookieName)
+		if err == nil {
+			auth.DeleteSession(cookie.Value)
+		}
+		auth.ClearSessionCookie(w)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"authenticated": false})
+		return
+	}
 
 	var unreadCount int64
 	database.DB.Model(&database.Notification{}).Where("user_id = ? AND is_read = ?", user.ID, false).Count(&unreadCount)
+	var totalDownloads int64
+	var torrentCount int64
+	var premiumCount int64
+	database.DB.Model(&database.UserUsage{}).Where("user_id = ?", user.ID).Count(&totalDownloads)
+	database.DB.Model(&database.UserUsage{}).Where("user_id = ? AND service_type = ?", user.ID, "torrent").Count(&torrentCount)
+	database.DB.Model(&database.UserUsage{}).Where("user_id = ? AND service_type = ?", user.ID, "premium").Count(&premiumCount)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{
@@ -451,10 +511,337 @@ func handleAuthMe(w http.ResponseWriter, r *http.Request) {
 		"name":                 session.Name,
 		"picture":              session.Picture,
 		"role":                 user.Role,
+		"email_verified":       user.EmailVerified,
 		"balance":              user.Balance,
 		"balance_formatted":    fmt.Sprintf("Rp %d", user.Balance),
+		"total_downloads":      totalDownloads,
+		"torrent_count":        torrentCount,
+		"premium_count":        premiumCount,
 		"unread_notifications": unreadCount,
 	})
+}
+
+func generateSecureToken() (string, error) {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
+}
+
+func hashToken(token string) string {
+	sum := sha256.Sum256([]byte(strings.TrimSpace(token)))
+	return hex.EncodeToString(sum[:])
+}
+
+func appBaseURL(r *http.Request) string {
+	base := strings.TrimSpace(os.Getenv("APP_BASE_URL"))
+	if base != "" {
+		return strings.TrimRight(base, "/")
+	}
+	scheme := "http"
+	if r != nil {
+		if r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https") {
+			scheme = "https"
+		}
+		if r.Host != "" {
+			return scheme + "://" + r.Host
+		}
+	}
+	return "http://localhost:8080"
+}
+
+func sendSMTPMail(to, subject, body string) error {
+	host := strings.TrimSpace(os.Getenv("SMTP_HOST"))
+	port := strings.TrimSpace(os.Getenv("SMTP_PORT"))
+	user := strings.TrimSpace(os.Getenv("SMTP_USER"))
+	pass := strings.TrimSpace(os.Getenv("SMTP_PASS"))
+	from := strings.TrimSpace(os.Getenv("SMTP_FROM"))
+	if from == "" {
+		from = user
+	}
+
+	if host == "" || port == "" || from == "" {
+		return errors.New("SMTP belum dikonfigurasi")
+	}
+
+	addr := host + ":" + port
+	msg := []byte("From: " + from + "\r\n" +
+		"To: " + to + "\r\n" +
+		"Subject: " + subject + "\r\n" +
+		"MIME-Version: 1.0\r\n" +
+		"Content-Type: text/plain; charset=UTF-8\r\n\r\n" +
+		body + "\r\n")
+
+	var authSMTP smtp.Auth
+	if user != "" && pass != "" {
+		authSMTP = smtp.PlainAuth("", user, pass, host)
+	}
+
+	return smtp.SendMail(addr, authSMTP, from, []string{to}, msg)
+}
+
+func handleSendVerificationEmail(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		Email string `json:"email"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"message": "Request tidak valid"})
+		return
+	}
+
+	email := strings.ToLower(strings.TrimSpace(req.Email))
+	if email == "" || !strings.Contains(email, "@") || !strings.Contains(email, ".") {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"message": "Email tidak valid"})
+		return
+	}
+
+	session := auth.GetSessionFromRequest(r)
+	var user database.User
+	if err := database.DB.First(&user, session.UserID).Error; err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		json.NewEncoder(w).Encode(map[string]string{"message": "User tidak ditemukan"})
+		return
+	}
+
+	if strings.ToLower(user.Email) != email {
+		var exists int64
+		database.DB.Model(&database.User{}).
+			Where("LOWER(email) = ? AND id <> ?", email, user.ID).
+			Count(&exists)
+		if exists > 0 {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]string{"message": "Email sudah digunakan akun lain"})
+			return
+		}
+		user.Email = email
+		user.EmailVerified = false
+	}
+
+	rawToken, err := generateSecureToken()
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"message": "Gagal membuat token verifikasi"})
+		return
+	}
+
+	expires := time.Now().Add(24 * time.Hour)
+	user.EmailVerifyToken = hashToken(rawToken)
+	user.EmailVerifyExp = &expires
+	if err := database.DB.Save(&user).Error; err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"message": "Gagal menyimpan verifikasi"})
+		return
+	}
+
+	verifyURL := fmt.Sprintf("%s/api/auth/verify-email?token=%s", appBaseURL(r), url.QueryEscape(rawToken))
+	body := fmt.Sprintf("Halo,\n\nKlik link berikut untuk verifikasi email akun azify.page kamu:\n%s\n\nLink berlaku 24 jam.\n\nJika kamu tidak meminta ini, abaikan email ini.", verifyURL)
+	if err := sendSMTPMail(user.Email, "Verifikasi Email azify.page", body); err != nil {
+		log.Printf("send verification email failed: %v", err)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"message": "Gagal mengirim email verifikasi. Periksa SMTP."})
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"message": "Link verifikasi berhasil dikirim"})
+}
+
+func handleVerifyEmail(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	rawToken := strings.TrimSpace(r.URL.Query().Get("token"))
+	if rawToken == "" {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte("<h3>Token verifikasi tidak valid.</h3>"))
+		return
+	}
+
+	now := time.Now()
+	tokenHash := hashToken(rawToken)
+	var user database.User
+	err := database.DB.Where("email_verify_token = ? AND email_verify_exp IS NOT NULL AND email_verify_exp > ?", tokenHash, now).First(&user).Error
+	if err != nil {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte("<h3>Token verifikasi tidak ditemukan atau sudah kedaluwarsa.</h3><p><a href=\"/login\">Kembali ke login</a></p>"))
+		return
+	}
+
+	if err := database.DB.Model(&user).Updates(map[string]any{
+		"email_verified":     true,
+		"email_verify_token": "",
+		"email_verify_exp":   nil,
+	}).Error; err != nil {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte("<h3>Gagal memverifikasi email. Coba lagi nanti.</h3>"))
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Write([]byte("<h3>Email berhasil diverifikasi.</h3><p><a href=\"/login\">Lanjut login</a></p>"))
+}
+
+func handleForgotPassword(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		Email string `json:"email"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"message": "Request tidak valid"})
+		return
+	}
+
+	email := strings.ToLower(strings.TrimSpace(req.Email))
+	if email == "" || !strings.Contains(email, "@") {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"message": "Jika email terdaftar, link reset akan dikirim."})
+		return
+	}
+
+	now := time.Now()
+	clientIP := strings.TrimSpace(r.Header.Get("X-Forwarded-For"))
+	if clientIP == "" {
+		clientIP = strings.TrimSpace(r.Header.Get("X-Real-IP"))
+	}
+	if clientIP == "" {
+		clientIP = r.RemoteAddr
+	}
+	key := email + "|" + clientIP
+
+	forgotPasswordCooldownMu.Lock()
+	if until, exists := forgotPasswordCooldown[key]; exists && now.Before(until) {
+		retryAfter := int(math.Ceil(until.Sub(now).Seconds()))
+		if retryAfter < 1 {
+			retryAfter = 1
+		}
+		forgotPasswordCooldownMu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		json.NewEncoder(w).Encode(map[string]any{
+			"message":     "Tunggu sebentar sebelum minta link reset lagi.",
+			"retry_after": retryAfter,
+		})
+		return
+	}
+	forgotPasswordCooldown[key] = now.Add(60 * time.Second)
+	for k, v := range forgotPasswordCooldown {
+		if now.After(v.Add(2 * time.Minute)) {
+			delete(forgotPasswordCooldown, k)
+		}
+	}
+	forgotPasswordCooldownMu.Unlock()
+
+	var user database.User
+	if err := database.DB.Where("LOWER(email) = ?", email).First(&user).Error; err == nil {
+		rawToken, tokenErr := generateSecureToken()
+		if tokenErr == nil {
+			expires := time.Now().Add(30 * time.Minute)
+			updateErr := database.DB.Model(&user).Updates(map[string]any{
+				"password_reset_token": hashToken(rawToken),
+				"password_reset_exp":   &expires,
+			}).Error
+			if updateErr == nil {
+				resetURL := fmt.Sprintf("%s/reset-password?token=%s", appBaseURL(r), url.QueryEscape(rawToken))
+				body := fmt.Sprintf("Halo,\n\nKlik link berikut untuk reset password akun azify.page kamu:\n%s\n\nLink berlaku 30 menit.\n\nJika kamu tidak meminta ini, abaikan email ini.", resetURL)
+				if mailErr := sendSMTPMail(user.Email, "Reset Password azify.page", body); mailErr != nil {
+					log.Printf("send reset password email failed: %v", mailErr)
+				}
+			}
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"message": "Jika email terdaftar, link reset akan dikirim."})
+}
+
+func handleResetPassword(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		Token       string `json:"token"`
+		NewPassword string `json:"new_password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Request tidak valid"})
+		return
+	}
+
+	rawToken := strings.TrimSpace(req.Token)
+	if rawToken == "" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Token wajib diisi"})
+		return
+	}
+	if len(req.NewPassword) < 6 {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Password minimal 6 karakter"})
+		return
+	}
+
+	now := time.Now()
+	tokenHash := hashToken(rawToken)
+	var user database.User
+	if err := database.DB.Where("password_reset_token = ? AND password_reset_exp IS NOT NULL AND password_reset_exp > ?", tokenHash, now).First(&user).Error; err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Token reset tidak valid atau kedaluwarsa"})
+		return
+	}
+
+	hashedPassword, err := auth.HashPassword(req.NewPassword)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Gagal memproses password"})
+		return
+	}
+
+	if err := database.DB.Model(&user).Updates(map[string]any{
+		"password":             hashedPassword,
+		"password_reset_token": "",
+		"password_reset_exp":   nil,
+	}).Error; err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Gagal reset password"})
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{"success": true, "message": "Password berhasil direset"})
 }
 
 // ========== USER & DATABASE HANDLERS ==========
@@ -469,12 +856,22 @@ func handleGetUser(w http.ResponseWriter, r *http.Request) {
 
 	var unreadCount int64
 	database.DB.Model(&database.Notification{}).Where("user_id = ? AND is_read = ?", user.ID, false).Count(&unreadCount)
+	var totalDownloads int64
+	var torrentCount int64
+	var premiumCount int64
+	database.DB.Model(&database.UserUsage{}).Where("user_id = ?", user.ID).Count(&totalDownloads)
+	database.DB.Model(&database.UserUsage{}).Where("user_id = ? AND service_type = ?", user.ID, "torrent").Count(&torrentCount)
+	database.DB.Model(&database.UserUsage{}).Where("user_id = ? AND service_type = ?", user.ID, "premium").Count(&premiumCount)
 
 	response := map[string]any{
 		"id":                   user.ID,
 		"email":                user.Email,
+		"email_verified":       user.EmailVerified,
 		"balance":              user.Balance,
 		"balance_formatted":    fmt.Sprintf("Rp %d", user.Balance),
+		"total_downloads":      totalDownloads,
+		"torrent_count":        torrentCount,
+		"premium_count":        premiumCount,
 		"unread_notifications": unreadCount,
 	}
 
@@ -487,12 +884,25 @@ func handleNotifications(w http.ResponseWriter, r *http.Request) {
 
 	if r.Method == http.MethodPost {
 		var req struct {
-			ID uint `json:"id"`
+			ID      uint `json:"id"`
+			MarkAll bool `json:"mark_all"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, "Invalid request", http.StatusBadRequest)
 			return
 		}
+
+		if req.MarkAll {
+			database.DB.Model(&database.Notification{}).Where("user_id = ? AND is_read = ?", session.UserID, false).Update("is_read", true)
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+
+		if req.ID == 0 {
+			http.Error(w, "Invalid request", http.StatusBadRequest)
+			return
+		}
+
 		database.DB.Model(&database.Notification{}).Where("id = ? AND user_id = ?", req.ID, session.UserID).Update("is_read", true)
 		w.WriteHeader(http.StatusOK)
 		return
@@ -515,6 +925,765 @@ func handleTransactions(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(transactions)
 }
 
+type topupDestination struct {
+	Method  string
+	Label   string
+	Account string
+}
+
+func topupSerialPrefix3(method string) string {
+	switch strings.ToLower(strings.TrimSpace(method)) {
+	case "gopay":
+		return "GOP"
+	case "bri":
+		return "BRI"
+	case "bank_jago":
+		return "JGO"
+	case "crypto_usdt":
+		return "USD"
+	default:
+		m := strings.ToUpper(strings.TrimSpace(method))
+		if len(m) >= 3 {
+			return m[:3]
+		}
+		return (m + "XXX")[:3]
+	}
+}
+
+func topupNamePrefix3(username string) string {
+	// Take first 3 alphanumeric chars, uppercased. Pad with X.
+	clean := make([]rune, 0, 3)
+	for _, r := range strings.ToUpper(username) {
+		if (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			clean = append(clean, r)
+		}
+		if len(clean) >= 3 {
+			break
+		}
+	}
+	for len(clean) < 3 {
+		clean = append(clean, 'X')
+	}
+	return string(clean[:3])
+}
+
+func randomBase36(n int) string {
+	if n <= 0 {
+		return ""
+	}
+	const alphabet = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+	b := make([]byte, n)
+	if _, err := rand.Read(b); err != nil {
+		for i := range b {
+			b[i] = alphabet[i%len(alphabet)]
+		}
+		return string(b)
+	}
+	for i := range b {
+		b[i] = alphabet[int(b[i])%len(alphabet)]
+	}
+	return string(b)
+}
+
+// Requested format:
+// (3charmetode)(tanggal+jam)(3char nama)(3 char unik)
+// Example: GOP12022614NAR9L1
+// dateTime uses DDMMYYHH (local time)
+func generateTopupSerial(method string, username string, t time.Time) string {
+	prefix := topupSerialPrefix3(method)
+	dateTime := t.Format("02010615")
+	name3 := topupNamePrefix3(username)
+	uniq3 := randomBase36(3)
+	return fmt.Sprintf("%s%s%s%s", prefix, dateTime, name3, uniq3)
+}
+
+func getTopupDestinations() map[string]topupDestination {
+	return map[string]topupDestination{
+		"gopay":       {Method: "gopay", Label: "GoPay", Account: "085778135021"},
+		"bri":         {Method: "bri", Label: "BRI", Account: "162901006178537"},
+		"bank_jago":   {Method: "bank_jago", Label: "Bank Jago", Account: "103325280390"},
+		"crypto_usdt": {Method: "crypto_usdt", Label: "Crypto (USDT)", Account: "SEGERA"},
+	}
+}
+
+func handleTopUps(w http.ResponseWriter, r *http.Request) {
+	session := auth.GetSessionFromRequest(r)
+
+	expireUserTopups := func() {
+		now := time.Now()
+		// Best-effort expiry update for this user.
+		database.DB.Model(&database.TopUpRequest{}).
+			Where("user_id = ? AND status = ? AND expires_at < ?", session.UserID, "awaiting_payment", now).
+			Updates(map[string]any{"status": "expired", "updated_at": now})
+	}
+
+	getFailureCountToday := func() int64 {
+		now := time.Now()
+		start := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+		var count int64
+		database.DB.Model(&database.TopUpRequest{}).
+			Where("user_id = ? AND created_at >= ? AND status IN ?", session.UserID, start, []string{"cancelled", "expired"}).
+			Count(&count)
+		return count
+	}
+
+	findActive := func() (*database.TopUpRequest, bool) {
+		var active database.TopUpRequest
+		if err := database.DB.Where("user_id = ? AND status IN ?", session.UserID, []string{"awaiting_payment", "pending"}).
+			Order("created_at desc").
+			First(&active).Error; err != nil {
+			return nil, false
+		}
+		return &active, true
+	}
+
+	// Keep statuses fresh.
+	expireUserTopups()
+
+	switch r.Method {
+	case http.MethodGet:
+		var reqs []database.TopUpRequest
+		database.DB.Where("user_id = ?", session.UserID).Order("created_at desc").Limit(50).Find(&reqs)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(reqs)
+		return
+
+	case http.MethodPost:
+		// One active topup at a time.
+		if active, ok := findActive(); ok {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusConflict)
+			json.NewEncoder(w).Encode(map[string]any{
+				"error":  "Anda masih punya top up yang sedang berjalan",
+				"active": active,
+			})
+			return
+		}
+
+		// Max 3 failures (cancel/expired) per day.
+		if getFailureCountToday() >= 3 {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusTooManyRequests)
+			json.NewEncoder(w).Encode(map[string]any{
+				"error": "Batas pembatalan/expired hari ini sudah tercapai (maks 3 kali). Silakan coba besok.",
+			})
+			return
+		}
+
+		var req struct {
+			Amount        int64  `json:"amount"`
+			PaymentMethod string `json:"payment_method"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "Invalid request", http.StatusBadRequest)
+			return
+		}
+		if req.Amount < 5000 {
+			http.Error(w, "Minimum top up is 5000", http.StatusBadRequest)
+			return
+		}
+		dests := getTopupDestinations()
+		dest, ok := dests[strings.ToLower(strings.TrimSpace(req.PaymentMethod))]
+		if !ok {
+			http.Error(w, "Unsupported payment method", http.StatusBadRequest)
+			return
+		}
+
+		var user database.User
+		database.DB.First(&user, session.UserID)
+		username := user.Email
+		if user.PikPakFolderName != "" {
+			username = user.PikPakFolderName
+		}
+
+		now := time.Now()
+		topup := database.TopUpRequest{
+			Serial:         generateTopupSerial(dest.Method, username, now),
+			UserID:         session.UserID,
+			Username:       username,
+			Amount:         req.Amount,
+			PaymentMethod:  dest.Method,
+			PaymentAccount: dest.Account,
+			Status:         "awaiting_payment",
+			ExpiresAt:      now.Add(30 * time.Minute),
+		}
+		if err := database.DB.Create(&topup).Error; err != nil {
+			http.Error(w, "Failed to create topup request", http.StatusInternalServerError)
+			return
+		}
+
+		// Notify the user in-app.
+		database.DB.Create(&database.Notification{
+			UserID:  session.UserID,
+			Title:   "Top up dibuat",
+			Message: fmt.Sprintf("Top up Rp %d via %s dibuat. Silakan transfer dan konfirmasi sebelum %s.", req.Amount, dest.Label, topup.ExpiresAt.Format("15:04")),
+		})
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(topup)
+		return
+
+	case http.MethodPatch:
+		var req struct {
+			ID     uint   `json:"id"`
+			Action string `json:"action"` // paid|cancel
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "Invalid request", http.StatusBadRequest)
+			return
+		}
+		action := strings.ToLower(strings.TrimSpace(req.Action))
+		if req.ID == 0 || (action != "paid" && action != "cancel") {
+			http.Error(w, "Invalid id/action", http.StatusBadRequest)
+			return
+		}
+
+		var topup database.TopUpRequest
+		if err := database.DB.First(&topup, req.ID).Error; err != nil {
+			http.Error(w, "Topup request not found", http.StatusNotFound)
+			return
+		}
+		if topup.UserID != session.UserID {
+			http.Error(w, "Forbidden", http.StatusForbidden)
+			return
+		}
+
+		now := time.Now()
+		// Expire if needed.
+		if topup.Status == "awaiting_payment" && !topup.ExpiresAt.IsZero() && topup.ExpiresAt.Before(now) {
+			topup.Status = "expired"
+			_ = database.DB.Save(&topup).Error
+		}
+
+		if action == "cancel" {
+			if topup.Status != "awaiting_payment" {
+				http.Error(w, "Only awaiting_payment topups can be cancelled", http.StatusBadRequest)
+				return
+			}
+			// Max 3 failures/day (cancel/expired) check at cancellation time.
+			if getFailureCountToday() >= 3 {
+				http.Error(w, "Daily cancellation/expiry limit reached", http.StatusTooManyRequests)
+				return
+			}
+			topup.Status = "cancelled"
+			topup.CancelledAt = &now
+			if err := database.DB.Save(&topup).Error; err != nil {
+				http.Error(w, "Failed to cancel", http.StatusInternalServerError)
+				return
+			}
+			database.DB.Create(&database.Notification{
+				UserID:  session.UserID,
+				Title:   "Top up dibatalkan",
+				Message: fmt.Sprintf("Top up Rp %d dibatalkan.", topup.Amount),
+			})
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(topup)
+			return
+		}
+
+		// action == paid
+		if topup.Status != "awaiting_payment" {
+			http.Error(w, "Topup is not in awaiting_payment", http.StatusBadRequest)
+			return
+		}
+		if !topup.ExpiresAt.IsZero() && topup.ExpiresAt.Before(now) {
+			http.Error(w, "Topup expired", http.StatusBadRequest)
+			return
+		}
+		topup.Status = "pending"
+		topup.PaidAt = &now
+		if err := database.DB.Save(&topup).Error; err != nil {
+			http.Error(w, "Failed to mark paid", http.StatusInternalServerError)
+			return
+		}
+
+		// Notify the user in-app.
+		database.DB.Create(&database.Notification{
+			UserID:  session.UserID,
+			Title:   "Konfirmasi terkirim",
+			Message: fmt.Sprintf("Konfirmasi top up Rp %d terkirim. Status: pending (menunggu admin).", topup.Amount),
+		})
+
+		// Notify admin via Telegram bot with inline actions (optional, env-driven).
+		_ = sendTelegramPendingTopupWithActions(topup, now)
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(topup)
+		return
+
+	default:
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+}
+
+func handleAdminTopUps(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		page := 1
+		if v := strings.TrimSpace(r.URL.Query().Get("page")); v != "" {
+			if n, err := strconv.Atoi(v); err == nil && n > 0 {
+				page = n
+			}
+		}
+		pageSize := 25
+		if v := strings.TrimSpace(r.URL.Query().Get("page_size")); v != "" {
+			if n, err := strconv.Atoi(v); err == nil {
+				if n < 1 {
+					n = 1
+				}
+				if n > 100 {
+					n = 100
+				}
+				pageSize = n
+			}
+		}
+
+		var total int64
+		database.DB.Model(&database.TopUpRequest{}).Count(&total)
+
+		var pendingCount int64
+		database.DB.Model(&database.TopUpRequest{}).Where("status = ?", "pending").Count(&pendingCount)
+
+		totalPages := 0
+		if total > 0 {
+			totalPages = int(math.Ceil(float64(total) / float64(pageSize)))
+		}
+		if totalPages > 0 && page > totalPages {
+			page = totalPages
+		}
+
+		offset := (page - 1) * pageSize
+		if offset < 0 {
+			offset = 0
+		}
+
+		var reqs []database.TopUpRequest
+		database.DB.
+			Order("CASE WHEN status = 'pending' THEN 0 ELSE 1 END").
+			Order("created_at desc").
+			Offset(offset).
+			Limit(pageSize).
+			Find(&reqs)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"items":         reqs,
+			"total":         total,
+			"pending_count": pendingCount,
+			"page":          page,
+			"page_size":     pageSize,
+			"total_pages":   totalPages,
+		})
+		return
+
+	case http.MethodPatch:
+		var req struct {
+			ID     uint   `json:"id"`
+			Status string `json:"status"` // approved|rejected
+			Reason string `json:"reason"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "Invalid request", http.StatusBadRequest)
+			return
+		}
+		status := strings.ToLower(strings.TrimSpace(req.Status))
+		if req.ID == 0 || (status != "approved" && status != "rejected") {
+			http.Error(w, "Invalid id/status", http.StatusBadRequest)
+			return
+		}
+
+		topup, err := applyTopupDecision(req.ID, status, req.Reason)
+		if err != nil {
+			switch {
+			case errors.Is(err, errTopupNotFound):
+				http.Error(w, "Topup request not found", http.StatusNotFound)
+				return
+			case errors.Is(err, errTopupAlreadyDecided):
+				http.Error(w, "Topup request already decided", http.StatusBadRequest)
+				return
+			default:
+				http.Error(w, "Failed to process topup", http.StatusInternalServerError)
+				return
+			}
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(topup)
+		return
+
+	default:
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+}
+
+var errTopupNotFound = errors.New("topup not found")
+var errTopupAlreadyDecided = errors.New("topup already decided")
+
+func applyTopupDecision(id uint, status string, reason string) (database.TopUpRequest, error) {
+	status = strings.ToLower(strings.TrimSpace(status))
+	if id == 0 || (status != "approved" && status != "rejected") {
+		return database.TopUpRequest{}, fmt.Errorf("invalid decision")
+	}
+
+	var topup database.TopUpRequest
+	if err := database.DB.First(&topup, id).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return database.TopUpRequest{}, errTopupNotFound
+		}
+		return database.TopUpRequest{}, err
+	}
+	if topup.Status != "pending" {
+		return database.TopUpRequest{}, errTopupAlreadyDecided
+	}
+
+	now := time.Now()
+	cleanReason := strings.TrimSpace(reason)
+
+	if status == "approved" {
+		err := database.DB.Transaction(func(tx *gorm.DB) error {
+			var user database.User
+			if err := tx.First(&user, topup.UserID).Error; err != nil {
+				return err
+			}
+
+			user.Balance += topup.Amount
+			if err := tx.Save(&user).Error; err != nil {
+				return err
+			}
+
+			trx := database.Transaction{
+				UserID:      topup.UserID,
+				Amount:      topup.Amount,
+				Type:        "topup",
+				Description: fmt.Sprintf("Top Up (%s)", topup.PaymentMethod),
+			}
+			if err := tx.Create(&trx).Error; err != nil {
+				return err
+			}
+
+			topup.Status = "approved"
+			topup.AdminReason = cleanReason
+			topup.DecidedAt = &now
+			return tx.Save(&topup).Error
+		})
+		if err != nil {
+			return database.TopUpRequest{}, err
+		}
+
+		database.DB.Create(&database.Notification{
+			UserID:  topup.UserID,
+			Title:   "Top up disetujui",
+			Message: fmt.Sprintf("Top up Rp %d telah disetujui. %s", topup.Amount, topup.AdminReason),
+		})
+		return topup, nil
+	}
+
+	topup.Status = "rejected"
+	topup.AdminReason = cleanReason
+	topup.DecidedAt = &now
+	if err := database.DB.Save(&topup).Error; err != nil {
+		return database.TopUpRequest{}, err
+	}
+	database.DB.Create(&database.Notification{
+		UserID:  topup.UserID,
+		Title:   "Top up ditolak",
+		Message: fmt.Sprintf("Top up Rp %d ditolak. %s", topup.Amount, topup.AdminReason),
+	})
+
+	return topup, nil
+}
+
+func parseTelegramAdminChatIDs() map[int64]struct{} {
+	ids := make(map[int64]struct{})
+	rawSingle := strings.TrimSpace(os.Getenv("TELEGRAM_ADMIN_CHAT_ID"))
+	rawMany := strings.TrimSpace(os.Getenv("TELEGRAM_ADMIN_CHAT_IDS"))
+	raw := rawSingle
+	if rawMany != "" {
+		if raw != "" {
+			raw += ","
+		}
+		raw += rawMany
+	}
+	if raw == "" {
+		return ids
+	}
+	for _, part := range strings.Split(raw, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		v, err := strconv.ParseInt(part, 10, 64)
+		if err != nil || v == 0 {
+			continue
+		}
+		ids[v] = struct{}{}
+	}
+	return ids
+}
+
+func isTelegramAdminChat(chatID int64) bool {
+	if len(telegramAdminChatIDs) == 0 {
+		return false
+	}
+	_, ok := telegramAdminChatIDs[chatID]
+	return ok
+}
+
+func telegramPostJSON(method string, payload map[string]any) error {
+	if telegramBotToken == "" {
+		return nil
+	}
+	endpoint := fmt.Sprintf("https://api.telegram.org/bot%s/%s", telegramBotToken, method)
+	body, _ := json.Marshal(payload)
+	req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		b, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("telegram %s failed: %s", method, strings.TrimSpace(string(b)))
+	}
+	return nil
+}
+
+func sendTelegramAdminMessage(message string) error {
+	if telegramBotToken == "" || len(telegramAdminChatIDs) == 0 {
+		return nil // silently skip
+	}
+	for chatID := range telegramAdminChatIDs {
+		if err := telegramPostJSON("sendMessage", map[string]any{
+			"chat_id":                  chatID,
+			"text":                     message,
+			"disable_web_page_preview": true,
+		}); err != nil {
+			log.Printf("telegram sendMessage failed for chat %d: %v", chatID, err)
+		}
+	}
+	return nil
+}
+
+func sendTelegramPendingTopupWithActions(topup database.TopUpRequest, paidAt time.Time) error {
+	if telegramBotToken == "" || len(telegramAdminChatIDs) == 0 {
+		return nil
+	}
+	text := fmt.Sprintf(
+		"✅ Konfirmasi TopUp (PENDING)\n\nID: %d\nSerial: %s\nUser: %s (user_id=%d)\nNominal: Rp %d\nMetode: %s\nTujuan: %s\nPaidAt: %s\n\nPilih aksi:",
+		topup.ID,
+		topup.Serial,
+		topup.Username,
+		topup.UserID,
+		topup.Amount,
+		topup.PaymentMethod,
+		topup.PaymentAccount,
+		paidAt.Format(time.RFC3339),
+	)
+	replyMarkup := map[string]any{
+		"inline_keyboard": [][]map[string]string{
+			{
+				{"text": "✅ ACC", "callback_data": fmt.Sprintf("topup:approve:%d", topup.ID)},
+				{"text": "❌ Reject", "callback_data": fmt.Sprintf("topup:reject:%d", topup.ID)},
+			},
+		},
+	}
+	for chatID := range telegramAdminChatIDs {
+		if err := telegramPostJSON("sendMessage", map[string]any{
+			"chat_id":                  chatID,
+			"text":                     text,
+			"disable_web_page_preview": true,
+			"reply_markup":             replyMarkup,
+		}); err != nil {
+			log.Printf("telegram pending topup message failed for chat %d: %v", chatID, err)
+		}
+	}
+	return nil
+}
+
+type telegramGetUpdatesResponse struct {
+	OK     bool             `json:"ok"`
+	Result []telegramUpdate `json:"result"`
+}
+
+type telegramUpdate struct {
+	UpdateID      int                    `json:"update_id"`
+	Message       *telegramMessage       `json:"message"`
+	CallbackQuery *telegramCallbackQuery `json:"callback_query"`
+}
+
+type telegramMessage struct {
+	MessageID int          `json:"message_id"`
+	Chat      telegramChat `json:"chat"`
+	Text      string       `json:"text"`
+}
+
+type telegramChat struct {
+	ID int64 `json:"id"`
+}
+
+type telegramCallbackQuery struct {
+	ID      string           `json:"id"`
+	Data    string           `json:"data"`
+	Message *telegramMessage `json:"message"`
+}
+
+func startTelegramAdminBotListener() {
+	if telegramBotToken == "" {
+		return
+	}
+	if len(telegramAdminChatIDs) == 0 {
+		log.Println("ℹ️ Telegram bot token set, but TELEGRAM_ADMIN_CHAT_ID/IDS is empty or invalid. Action bot disabled.")
+		return
+	}
+	go runTelegramLongPolling()
+	log.Printf("✅ Telegram admin action bot active (%d admin chat ID)", len(telegramAdminChatIDs))
+}
+
+func runTelegramLongPolling() {
+	offset := 0
+	client := &http.Client{Timeout: 70 * time.Second}
+
+	for {
+		endpoint := fmt.Sprintf("https://api.telegram.org/bot%s/getUpdates?timeout=60&offset=%d", telegramBotToken, offset)
+		resp, err := client.Get(endpoint)
+		if err != nil {
+			time.Sleep(2 * time.Second)
+			continue
+		}
+
+		var data telegramGetUpdatesResponse
+		err = json.NewDecoder(resp.Body).Decode(&data)
+		resp.Body.Close()
+		if err != nil || !data.OK {
+			time.Sleep(2 * time.Second)
+			continue
+		}
+
+		for _, upd := range data.Result {
+			if upd.UpdateID >= offset {
+				offset = upd.UpdateID + 1
+			}
+			handleTelegramUpdate(upd)
+		}
+	}
+}
+
+func handleTelegramUpdate(upd telegramUpdate) {
+	if upd.CallbackQuery != nil {
+		handleTelegramCallback(*upd.CallbackQuery)
+		return
+	}
+	if upd.Message == nil {
+		return
+	}
+	chatID := upd.Message.Chat.ID
+	if !isTelegramAdminChat(chatID) {
+		return
+	}
+	text := strings.TrimSpace(upd.Message.Text)
+	if text == "/start" || text == "/help" {
+		_ = telegramPostJSON("sendMessage", map[string]any{
+			"chat_id": chatID,
+			"text":    "Bot admin aktif. Saat ada top up pending, gunakan tombol ✅ ACC atau ❌ Reject dari notifikasi.",
+		})
+	}
+}
+
+func handleTelegramCallback(cb telegramCallbackQuery) {
+	if cb.Message == nil {
+		return
+	}
+	chatID := cb.Message.Chat.ID
+	if !isTelegramAdminChat(chatID) {
+		_ = telegramPostJSON("answerCallbackQuery", map[string]any{
+			"callback_query_id": cb.ID,
+			"text":              "Unauthorized",
+			"show_alert":        false,
+		})
+		return
+	}
+
+	parts := strings.Split(strings.TrimSpace(cb.Data), ":")
+	if len(parts) != 3 || parts[0] != "topup" {
+		_ = telegramPostJSON("answerCallbackQuery", map[string]any{
+			"callback_query_id": cb.ID,
+			"text":              "Aksi tidak dikenali",
+			"show_alert":        false,
+		})
+		return
+	}
+
+	action := strings.ToLower(strings.TrimSpace(parts[1]))
+	id64, err := strconv.ParseUint(strings.TrimSpace(parts[2]), 10, 64)
+	if err != nil || id64 == 0 {
+		_ = telegramPostJSON("answerCallbackQuery", map[string]any{
+			"callback_query_id": cb.ID,
+			"text":              "ID topup tidak valid",
+			"show_alert":        false,
+		})
+		return
+	}
+
+	status := ""
+	reason := "Diproses via Telegram"
+	if action == "approve" {
+		status = "approved"
+		reason = "Disetujui via Telegram"
+	} else if action == "reject" {
+		status = "rejected"
+		reason = "Ditolak via Telegram"
+	} else {
+		_ = telegramPostJSON("answerCallbackQuery", map[string]any{
+			"callback_query_id": cb.ID,
+			"text":              "Aksi tidak valid",
+			"show_alert":        false,
+		})
+		return
+	}
+
+	topup, err := applyTopupDecision(uint(id64), status, reason)
+	if err != nil {
+		msg := "Gagal memproses"
+		if errors.Is(err, errTopupNotFound) {
+			msg = "Top up tidak ditemukan"
+		} else if errors.Is(err, errTopupAlreadyDecided) {
+			msg = "Top up sudah diputus"
+		}
+		_ = telegramPostJSON("answerCallbackQuery", map[string]any{
+			"callback_query_id": cb.ID,
+			"text":              msg,
+			"show_alert":        false,
+		})
+		return
+	}
+
+	_ = telegramPostJSON("answerCallbackQuery", map[string]any{
+		"callback_query_id": cb.ID,
+		"text":              "Berhasil",
+		"show_alert":        false,
+	})
+
+	_ = telegramPostJSON("sendMessage", map[string]any{
+		"chat_id": chatID,
+		"text":    fmt.Sprintf("Top up #%d (%s) berhasil %s via Telegram.", topup.ID, topup.Serial, topup.Status),
+	})
+
+	// Remove buttons so it cannot be clicked repeatedly from the same message.
+	_ = telegramPostJSON("editMessageReplyMarkup", map[string]any{
+		"chat_id":    chatID,
+		"message_id": cb.Message.MessageID,
+		"reply_markup": map[string]any{
+			"inline_keyboard": [][]map[string]string{},
+		},
+	})
+}
+
 func handleGetHosts(w http.ResponseWriter, r *http.Request) {
 	var hostSettings []database.HostAvailability
 	database.DB.Order("name asc").Find(&hostSettings)
@@ -535,7 +1704,104 @@ func handleGetHosts(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(hosts)
 }
 
+func acquirePremiumAPISlot(ctx context.Context) error {
+	for {
+		select {
+		case premiumAPISemaphore <- struct{}{}:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(150 * time.Millisecond):
+		}
+	}
+}
+
+func releasePremiumAPISlot() {
+	select {
+	case <-premiumAPISemaphore:
+	default:
+	}
+}
+
+func mapRealDebridError(err error) (status int, message string) {
+	if err == nil {
+		return http.StatusBadRequest, "Gagal memproses request Real-Debrid"
+	}
+	msg := err.Error()
+	lower := strings.ToLower(msg)
+
+	if strings.Contains(lower, "bad_token") || strings.Contains(lower, "error_code\": 8") {
+		return http.StatusUnauthorized, "REALDEBRID_API_KEY tidak valid. Silakan ganti token dari halaman apitoken."
+	}
+	if strings.Contains(lower, "error_code\": 34") || strings.Contains(lower, "too many requests") {
+		return http.StatusTooManyRequests, "Terlalu banyak request ke Real-Debrid. Coba lagi sebentar."
+	}
+	if strings.Contains(lower, "error_code\": 22") {
+		return http.StatusForbidden, "IP address tidak diizinkan oleh Real-Debrid untuk token ini."
+	}
+	if strings.Contains(lower, "error_code\": 16") {
+		return http.StatusBadRequest, "Host/link belum didukung oleh Real-Debrid."
+	}
+	if strings.Contains(lower, "error_code\": 17") || strings.Contains(lower, "error_code\": 19") {
+		return http.StatusServiceUnavailable, "Host sedang maintenance / sementara tidak tersedia."
+	}
+
+	return http.StatusBadRequest, "Gagal memproses link host premium"
+}
+
 func handlePremiumRequest(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodGet {
+		session := auth.GetSessionFromRequest(r)
+		page := 1
+		if raw := strings.TrimSpace(r.URL.Query().Get("page")); raw != "" {
+			if v, err := strconv.Atoi(raw); err == nil && v > 0 {
+				page = v
+			}
+		}
+
+		pageSize := 25
+		if raw := strings.TrimSpace(r.URL.Query().Get("page_size")); raw != "" {
+			if v, err := strconv.Atoi(raw); err == nil {
+				if v < 1 {
+					v = 1
+				}
+				if v > 25 {
+					v = 25
+				}
+				pageSize = v
+			}
+		}
+
+		var total int64
+		database.DB.Model(&database.PremiumRequest{}).Where("user_id = ?", session.UserID).Count(&total)
+
+		totalPages := int((total + int64(pageSize) - 1) / int64(pageSize))
+		if totalPages == 0 {
+			totalPages = 1
+		}
+		if page > totalPages {
+			page = totalPages
+		}
+
+		offset := (page - 1) * pageSize
+
+		var reqs []database.PremiumRequest
+		database.DB.Where("user_id = ?", session.UserID).
+			Order("created_at desc").
+			Limit(pageSize).
+			Offset(offset).
+			Find(&reqs)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"items":       reqs,
+			"page":        page,
+			"page_size":   pageSize,
+			"total":       total,
+			"total_pages": totalPages,
+		})
+		return
+	}
+
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -550,6 +1816,210 @@ func handlePremiumRequest(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Invalid request", http.StatusBadRequest)
 		return
 	}
+	req.URL = strings.TrimSpace(req.URL)
+	if req.URL == "" {
+		http.Error(w, "URL wajib diisi", http.StatusBadRequest)
+		return
+	}
+
+	if strings.TrimSpace(rdClient.APIKey) != "" {
+		if err := acquirePremiumAPISlot(r.Context()); err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusRequestTimeout)
+			json.NewEncoder(w).Encode(map[string]any{
+				"message": "Request dibatalkan sebelum diproses",
+			})
+			return
+		}
+		defer releasePremiumAPISlot()
+
+		checkInfo, err := rdClient.CheckLink(req.URL)
+		if err != nil {
+			status, friendly := mapRealDebridError(err)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(status)
+			json.NewEncoder(w).Encode(map[string]any{
+				"message": friendly,
+				"error":   err.Error(),
+			})
+			return
+		}
+		if !checkInfo.Supported {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]any{
+				"message": "Host/link belum didukung oleh Real-Debrid",
+			})
+			return
+		}
+
+		priceCfg, err := database.GetPricing("premium")
+		if err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			json.NewEncoder(w).Encode(map[string]any{
+				"message": "Pricing premium belum tersedia",
+				"error":   err.Error(),
+			})
+			return
+		}
+
+		fileSize := checkInfo.Filesize
+		if fileSize < 0 {
+			fileSize = 0
+		}
+		price, chargedUnits, chargedGB := priceCfg.CalculatePrice(fileSize)
+		if price <= 0 {
+			price = priceCfg.PricePerUnit
+			chargedUnits = 1
+			chargedGB = priceCfg.UnitSizeGB
+		}
+
+		unrestricted, err := rdClient.UnrestrictLink(req.URL)
+		if err != nil {
+			status, friendly := mapRealDebridError(err)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(status)
+			json.NewEncoder(w).Encode(map[string]any{
+				"message": friendly,
+				"error":   err.Error(),
+			})
+			return
+		}
+
+		fileSize = unrestricted.Filesize
+		if fileSize <= 0 {
+			fileSize = checkInfo.Filesize
+		}
+		price, chargedUnits, chargedGB = priceCfg.CalculatePrice(fileSize)
+		if price <= 0 {
+			price = priceCfg.PricePerUnit
+			chargedUnits = 1
+			chargedGB = priceCfg.UnitSizeGB
+		}
+
+		streamURL := ""
+		if unrestricted.ID != "" {
+			if s, streamErr := rdClient.GetStreamingLink(unrestricted.ID); streamErr == nil {
+				streamURL = strings.TrimSpace(s)
+			} else {
+				log.Printf("realdebrid streaming link skipped: %v", streamErr)
+			}
+		}
+		sizeGB := "0 GB"
+		if fileSize > 0 {
+			sizeGB = fmt.Sprintf("%.2f GB", float64(fileSize)/float64(1024*1024*1024))
+		}
+
+		var savedReq database.PremiumRequest
+		var currentBalance int64
+		txErr := database.DB.Transaction(func(tx *gorm.DB) error {
+			var user database.User
+			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&user, session.UserID).Error; err != nil {
+				return err
+			}
+			if user.Balance < price {
+				currentBalance = user.Balance
+				return fmt.Errorf("insufficient_balance")
+			}
+
+			user.Balance -= price
+			currentBalance = user.Balance
+			if err := tx.Model(&database.User{}).Where("id = ?", user.ID).Update("balance", user.Balance).Error; err != nil {
+				return err
+			}
+
+			savedReq = database.PremiumRequest{
+				UserID:    session.UserID,
+				URL:       req.URL,
+				Filename:  unrestricted.Filename,
+				Host:      unrestricted.Host,
+				SizeBytes: fileSize,
+				Price:     price,
+				Status:    "done",
+				ResultURL: unrestricted.Download,
+				StreamURL: streamURL,
+			}
+			if err := tx.Create(&savedReq).Error; err != nil {
+				return err
+			}
+
+			if err := tx.Create(&database.Transaction{
+				UserID:      session.UserID,
+				Amount:      -price,
+				Type:        "download",
+				Description: fmt.Sprintf("Premium Host: %s (%d GB) - Rp %d", unrestricted.Filename, chargedGB, price),
+			}).Error; err != nil {
+				return err
+			}
+
+			if err := tx.Create(&database.UserUsage{
+				UserID:      session.UserID,
+				ServiceType: "premium",
+				Source:      req.URL,
+			}).Error; err != nil {
+				return err
+			}
+
+			notifMsg := fmt.Sprintf("Link premium siap diunduh. %s (%s). Biaya: Rp %d.", unrestricted.Filename, sizeGB, price)
+			if streamURL != "" {
+				notifMsg += " Tersedia juga link streaming."
+			}
+			if err := tx.Create(&database.Notification{
+				UserID:  session.UserID,
+				Title:   "Link premium siap",
+				Message: notifMsg,
+			}).Error; err != nil {
+				return err
+			}
+
+			return nil
+		})
+		if txErr != nil {
+			if strings.Contains(strings.ToLower(txErr.Error()), "insufficient_balance") {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusPaymentRequired)
+				json.NewEncoder(w).Encode(map[string]any{
+					"message":         "Saldo tidak mencukupi untuk URL premium ini",
+					"required_price":  price,
+					"required_units":  chargedUnits,
+					"required_gb":     chargedGB,
+					"current_balance": currentBalance,
+					"filename":        unrestricted.Filename,
+					"size_bytes":      fileSize,
+					"size_gb":         sizeGB,
+					"host":            unrestricted.Host,
+				})
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]any{
+				"message": "Gagal menyimpan transaksi premium",
+				"error":   txErr.Error(),
+			})
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"message":       "Link premium valid dan siap diunduh",
+			"id":            savedReq.ID,
+			"mode":          "automatic",
+			"filename":      unrestricted.Filename,
+			"host":          unrestricted.Host,
+			"size_bytes":    fileSize,
+			"size_gb":       sizeGB,
+			"price":         price,
+			"charged_units": chargedUnits,
+			"charged_gb":    chargedGB,
+			"current_balance_after": currentBalance,
+			"download_url":  unrestricted.Download,
+			"stream_url":    streamURL,
+			"status":        "done",
+		})
+		return
+	}
 
 	premiumReq := database.PremiumRequest{
 		UserID: session.UserID,
@@ -560,6 +2030,11 @@ func handlePremiumRequest(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Failed to create request", http.StatusInternalServerError)
 		return
 	}
+	_ = database.DB.Create(&database.UserUsage{
+		UserID:      session.UserID,
+		ServiceType: "premium",
+		Source:      req.URL,
+	}).Error
 
 	notification := database.Notification{
 		UserID:  session.UserID,
@@ -727,11 +2202,98 @@ func handleAddOfflineTask(w http.ResponseWriter, r *http.Request) {
 		if chargedGB < 1 && sizeBytes > 0 {
 			chargedGB = 1
 		}
+		if chargedGB < 1 {
+			chargedGB = 1
+		}
 		price = int64(chargedGB * 650)
+		priceDisplay = fmt.Sprintf("Rp %d", price)
+	}
+	if price <= 0 {
+		if err == nil && pricing.PricePerUnit > 0 {
+			price = pricing.PricePerUnit
+			chargedUnits = 1
+			chargedGB = pricing.UnitSizeGB
+			if chargedGB <= 0 {
+				chargedGB = 1
+			}
+		} else {
+			price = 650
+			chargedUnits = 1
+			chargedGB = 1
+		}
 		priceDisplay = fmt.Sprintf("Rp %d", price)
 	}
 
 	sizeGB := float64(sizeBytes) / (1024 * 1024 * 1024)
+	var currentBalance int64
+	txErr := database.DB.Transaction(func(tx *gorm.DB) error {
+		var user database.User
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&user, session.UserID).Error; err != nil {
+			return err
+		}
+		if user.Balance < price {
+			currentBalance = user.Balance
+			return fmt.Errorf("insufficient_balance")
+		}
+
+		user.Balance -= price
+		currentBalance = user.Balance
+		if err := tx.Model(&database.User{}).Where("id = ?", user.ID).Update("balance", user.Balance).Error; err != nil {
+			return err
+		}
+
+		if err := tx.Create(&database.Transaction{
+			UserID:      session.UserID,
+			Amount:      -price,
+			Type:        "download",
+			Description: fmt.Sprintf("Torrent/Magnet: %s (%d GB) - Rp %d", name, chargedGB, price),
+		}).Error; err != nil {
+			return err
+		}
+
+		if err := tx.Create(&database.UserUsage{
+			UserID:      session.UserID,
+			ServiceType: "torrent",
+			Source:      req.URL,
+		}).Error; err != nil {
+			return err
+		}
+
+		if err := tx.Create(&database.Notification{
+			UserID:  session.UserID,
+			Title:   "Unduhan torrent diproses",
+			Message: fmt.Sprintf("Unduhan %s diterima. Biaya: Rp %d.", name, price),
+		}).Error; err != nil {
+			return err
+		}
+
+		return nil
+	})
+	if txErr != nil {
+		if strings.Contains(strings.ToLower(txErr.Error()), "insufficient_balance") {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusPaymentRequired)
+			json.NewEncoder(w).Encode(map[string]any{
+				"message":         "Saldo tidak mencukupi untuk torrent ini",
+				"required_price":  price,
+				"required_units":  chargedUnits,
+				"required_gb":     chargedGB,
+				"current_balance": currentBalance,
+				"name":            name,
+				"size":            pikpak.FormatBytes(sizeBytes),
+				"size_gb":         fmt.Sprintf("%.2f GB", sizeGB),
+			})
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]any{
+			"message": "Gagal menyimpan transaksi torrent",
+			"error":   txErr.Error(),
+		})
+		return
+	}
 
 	response := map[string]any{
 		"id":            id,
@@ -742,6 +2304,7 @@ func handleAddOfflineTask(w http.ResponseWriter, r *http.Request) {
 		"charged_units": chargedUnits,
 		"price":         price,
 		"price_display": priceDisplay,
+		"current_balance_after": currentBalance,
 		"cached":        isCached,
 		"estimation":    estimation,
 		"raw":           res,
@@ -838,11 +2401,150 @@ func handleDownloadFolder(w http.ResponseWriter, r *http.Request) {
 // ========== ADMIN HANDLERS ==========
 
 func handleAdminUsers(w http.ResponseWriter, r *http.Request) {
-	var users []database.User
-	database.DB.Find(&users)
+	session := auth.GetSessionFromRequest(r)
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(users)
+	switch r.Method {
+	case http.MethodGet:
+		var users []database.User
+		database.DB.Order("created_at desc").Find(&users)
+
+		type usageAgg struct {
+			UserID         uint  `json:"user_id"`
+			TotalDownloads int64 `json:"total_downloads"`
+			TorrentCount   int64 `json:"torrent_count"`
+			PremiumCount   int64 `json:"premium_count"`
+		}
+		var aggs []usageAgg
+		database.DB.Table("user_usages").
+			Select(`user_id,
+				COUNT(*) AS total_downloads,
+				SUM(CASE WHEN service_type = 'torrent' THEN 1 ELSE 0 END) AS torrent_count,
+				SUM(CASE WHEN service_type = 'premium' THEN 1 ELSE 0 END) AS premium_count`).
+			Group("user_id").
+			Scan(&aggs)
+
+		usageMap := map[uint]usageAgg{}
+		for _, a := range aggs {
+			usageMap[a.UserID] = a
+		}
+
+		resp := make([]map[string]any, 0, len(users))
+		for _, u := range users {
+			a := usageMap[u.ID]
+			resp = append(resp, map[string]any{
+				"id":                 u.ID,
+				"email":              u.Email,
+				"role":               u.Role,
+				"is_active":          u.IsActive,
+				"balance":            u.Balance,
+				"pikpak_folder_id":   u.PikPakFolderID,
+				"pikpak_folder_name": u.PikPakFolderName,
+				"created_at":         u.CreatedAt,
+				"updated_at":         u.UpdatedAt,
+				"total_downloads":    a.TotalDownloads,
+				"torrent_count":      a.TorrentCount,
+				"premium_count":      a.PremiumCount,
+			})
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+		return
+
+	case http.MethodPost:
+		var req struct {
+			Identifier string `json:"identifier"` // email OR username(before @)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "Invalid request", http.StatusBadRequest)
+			return
+		}
+		identifier := strings.TrimSpace(req.Identifier)
+		if identifier == "" {
+			http.Error(w, "identifier is required", http.StatusBadRequest)
+			return
+		}
+
+		var user database.User
+		err := database.DB.Where("LOWER(email) = ?", strings.ToLower(identifier)).First(&user).Error
+		if err != nil {
+			err = database.DB.Where("LOWER(email) LIKE ?", strings.ToLower(identifier)+"@%").First(&user).Error
+		}
+		if err != nil {
+			http.Error(w, "User tidak ditemukan", http.StatusNotFound)
+			return
+		}
+
+		if user.Role != "admin" {
+			if err := database.DB.Model(&database.User{}).Where("id = ?", user.ID).Update("role", "admin").Error; err != nil {
+				http.Error(w, "Failed to promote user", http.StatusInternalServerError)
+				return
+			}
+			user.Role = "admin"
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(user)
+		return
+
+	case http.MethodPatch:
+		var req struct {
+			UserID   uint   `json:"user_id"`
+			IsActive *bool  `json:"is_active"`
+			Role     string `json:"role"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "Invalid request", http.StatusBadRequest)
+			return
+		}
+		if req.UserID == 0 {
+			http.Error(w, "user_id is required", http.StatusBadRequest)
+			return
+		}
+
+		updates := map[string]any{}
+		if req.IsActive != nil {
+			if session != nil && session.UserID == req.UserID && !*req.IsActive {
+				http.Error(w, "Tidak bisa menonaktifkan akun admin sendiri", http.StatusBadRequest)
+				return
+			}
+			updates["is_active"] = *req.IsActive
+		}
+		if strings.TrimSpace(req.Role) != "" {
+			role := strings.ToLower(strings.TrimSpace(req.Role))
+			if role != "admin" && role != "client" {
+				http.Error(w, "role must be admin/client", http.StatusBadRequest)
+				return
+			}
+			if session != nil && session.UserID == req.UserID && role != "admin" {
+				http.Error(w, "Tidak bisa menurunkan role akun sendiri", http.StatusBadRequest)
+				return
+			}
+			updates["role"] = role
+		}
+
+		if len(updates) == 0 {
+			http.Error(w, "No changes provided", http.StatusBadRequest)
+			return
+		}
+
+		if err := database.DB.Model(&database.User{}).Where("id = ?", req.UserID).Updates(updates).Error; err != nil {
+			http.Error(w, "Failed to update user", http.StatusInternalServerError)
+			return
+		}
+
+		var updated database.User
+		if err := database.DB.First(&updated, req.UserID).Error; err != nil {
+			http.Error(w, "User not found", http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(updated)
+		return
+
+	default:
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
 }
 
 func handleAdminPricing(w http.ResponseWriter, r *http.Request) {
@@ -903,6 +2605,94 @@ func handleAdminStats(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(stats)
 }
 
+func handleAdminMonitoring(w http.ResponseWriter, r *http.Request) {
+	type topUsageUser struct {
+		UserID       uint   `json:"user_id"`
+		Email        string `json:"email"`
+		Balance      int64  `json:"balance"`
+		TotalUsage   int64  `json:"total_usage"`
+		TorrentCount int64  `json:"torrent_count"`
+		PremiumCount int64  `json:"premium_count"`
+	}
+	type topSaldoUser struct {
+		ID        uint      `json:"id"`
+		Email     string    `json:"email"`
+		Role      string    `json:"role"`
+		Balance   int64     `json:"balance"`
+		IsActive  bool      `json:"is_active"`
+		CreatedAt time.Time `json:"created_at"`
+	}
+	type dailyUsage struct {
+		Date         string `json:"date"`
+		TorrentCount int64  `json:"torrent_count"`
+		PremiumCount int64  `json:"premium_count"`
+		TotalUsage   int64  `json:"total_usage"`
+	}
+
+	var totalUsage int64
+	var torrentCount int64
+	var premiumCount int64
+	var activeUsers int64
+	var totalUsers int64
+	var usersWithUsage int64
+
+	database.DB.Model(&database.UserUsage{}).Count(&totalUsage)
+	database.DB.Model(&database.UserUsage{}).Where("service_type = ?", "torrent").Count(&torrentCount)
+	database.DB.Model(&database.UserUsage{}).Where("service_type = ?", "premium").Count(&premiumCount)
+	database.DB.Model(&database.User{}).Where("is_active = ?", true).Count(&activeUsers)
+	database.DB.Model(&database.User{}).Count(&totalUsers)
+	database.DB.Model(&database.UserUsage{}).Distinct("user_id").Count(&usersWithUsage)
+
+	var topByUsage []topUsageUser
+	database.DB.Table("user_usages AS uu").
+		Select(`uu.user_id AS user_id,
+			u.email AS email,
+			u.balance AS balance,
+			COUNT(*) AS total_usage,
+			SUM(CASE WHEN uu.service_type = 'torrent' THEN 1 ELSE 0 END) AS torrent_count,
+			SUM(CASE WHEN uu.service_type = 'premium' THEN 1 ELSE 0 END) AS premium_count`).
+		Joins("JOIN users u ON u.id = uu.user_id").
+		Group("uu.user_id, u.email, u.balance").
+		Order("total_usage DESC").
+		Limit(10).
+		Scan(&topByUsage)
+
+	var topBySaldo []topSaldoUser
+	database.DB.Model(&database.User{}).
+		Select("id, email, role, balance, is_active, created_at").
+		Order("balance DESC").
+		Limit(10).
+		Find(&topBySaldo)
+
+	var usageLast7Days []dailyUsage
+	database.DB.Table("user_usages").
+		Select(`DATE(created_at) AS date,
+			SUM(CASE WHEN service_type = 'torrent' THEN 1 ELSE 0 END) AS torrent_count,
+			SUM(CASE WHEN service_type = 'premium' THEN 1 ELSE 0 END) AS premium_count,
+			COUNT(*) AS total_usage`).
+		Where("created_at >= ?", time.Now().AddDate(0, 0, -7)).
+		Group("DATE(created_at)").
+		Order("DATE(created_at) DESC").
+		Scan(&usageLast7Days)
+
+	response := map[string]any{
+		"aggregate": map[string]any{
+			"total_users":       totalUsers,
+			"active_users":      activeUsers,
+			"users_with_usage":  usersWithUsage,
+			"total_downloads":   totalUsage,
+			"torrent_count":     torrentCount,
+			"premium_url_count": premiumCount,
+		},
+		"top_users_by_usage":   topByUsage,
+		"top_users_by_balance": topBySaldo,
+		"usage_last_7_days":    usageLast7Days,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+}
+
 func handleAdminUserBalance(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -910,8 +2700,9 @@ func handleAdminUserBalance(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		UserID uint  `json:"user_id"`
-		Amount int64 `json:"amount"`
+		UserID  uint   `json:"user_id"`
+		Amount  *int64 `json:"amount"`  // legacy: delta
+		Balance *int64 `json:"balance"` // preferred: absolute
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -919,30 +2710,44 @@ func handleAdminUserBalance(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Update user balance
-	result := database.DB.Model(&database.User{}).Where("id = ?", req.UserID).
-		Update("balance", gorm.Expr("balance + ?", req.Amount))
+	var user database.User
+	if err := database.DB.First(&user, req.UserID).Error; err != nil {
+		http.Error(w, "User not found", http.StatusNotFound)
+		return
+	}
 
-	if result.Error != nil {
+	oldBalance := user.Balance
+	newBalance := oldBalance
+	if req.Balance != nil {
+		newBalance = *req.Balance
+	} else if req.Amount != nil {
+		newBalance = oldBalance + *req.Amount
+	} else {
+		http.Error(w, "balance is required", http.StatusBadRequest)
+		return
+	}
+
+	if err := database.DB.Model(&database.User{}).Where("id = ?", req.UserID).Update("balance", newBalance).Error; err != nil {
 		http.Error(w, "Failed to update balance", http.StatusInternalServerError)
 		return
 	}
 
-	// Create transaction record
-	transType := "adjustment"
-	description := fmt.Sprintf("Admin adjustment: %+d", req.Amount)
-	if req.Amount > 0 {
-		transType = "topup"
-		description = fmt.Sprintf("Top Up (Admin): +Rp %d", req.Amount)
-	}
+	delta := newBalance - oldBalance
+	if delta != 0 {
+		transType := "adjustment"
+		description := fmt.Sprintf("Admin set balance: %d -> %d", oldBalance, newBalance)
+		if delta > 0 {
+			transType = "topup"
+		}
 
-	transaction := database.Transaction{
-		UserID:      req.UserID,
-		Amount:      req.Amount,
-		Type:        transType,
-		Description: description,
+		transaction := database.Transaction{
+			UserID:      req.UserID,
+			Amount:      delta,
+			Type:        transType,
+			Description: description,
+		}
+		database.DB.Create(&transaction)
 	}
-	database.DB.Create(&transaction)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"message": "Balance updated"})
@@ -1056,6 +2861,16 @@ func handleAdminOfficialPosts(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		var post database.OfficialPost
+		if err := database.DB.First(&post, idStr).Error; err != nil {
+			http.Error(w, "Post not found", http.StatusNotFound)
+			return
+		}
+		if strings.EqualFold(strings.TrimSpace(post.Type), "guide_help") {
+			http.Error(w, "Panduan & bantuan tidak bisa dihapus", http.StatusForbidden)
+			return
+		}
+
 		result := database.DB.Delete(&database.OfficialPost{}, idStr)
 		if result.Error != nil {
 			http.Error(w, "Failed to delete post", http.StatusInternalServerError)
@@ -1087,10 +2902,20 @@ func handleAdminOfficialPosts(w http.ResponseWriter, r *http.Request) {
 
 		updates := map[string]any{}
 		if req.Title != nil {
-			updates["title"] = strings.TrimSpace(*req.Title)
+			title := strings.TrimSpace(*req.Title)
+			if title == "" {
+				http.Error(w, "title cannot be empty", http.StatusBadRequest)
+				return
+			}
+			updates["title"] = title
 		}
 		if req.Content != nil {
-			updates["content"] = strings.TrimSpace(*req.Content)
+			content := strings.TrimSpace(*req.Content)
+			if content == "" {
+				http.Error(w, "content cannot be empty", http.StatusBadRequest)
+				return
+			}
+			updates["content"] = content
 		}
 		if req.Type != nil {
 			updates["type"] = strings.TrimSpace(*req.Type)
@@ -1215,12 +3040,78 @@ func handleOfficialPosts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// GET - list official posts
+	// GET - single or list official posts
+	idStr := strings.TrimSpace(r.URL.Query().Get("id"))
+	typeFilter := strings.TrimSpace(r.URL.Query().Get("type"))
+	if idStr != "" {
+		var post database.OfficialPost
+		if err := database.DB.Where("id = ? AND is_active = ?", idStr, true).First(&post).Error; err != nil {
+			if err == gorm.ErrRecordNotFound {
+				http.Error(w, "Post not found", http.StatusNotFound)
+				return
+			}
+			http.Error(w, "Failed to fetch post", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(post)
+		return
+	}
+
 	var posts []database.OfficialPost
-	database.DB.Where("is_active = ?", true).Order("created_at desc").Limit(20).Find(&posts)
+	query := database.DB.Where("is_active = ?", true)
+	if typeFilter != "" {
+		query = query.Where("type = ?", typeFilter)
+	} else {
+		query = query.Where("type <> ?", "guide_help")
+	}
+	query.Order("created_at desc").Limit(20).Find(&posts)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(posts)
+}
+
+func resolveLocalBannerImagePath(imageURL string) (string, bool) {
+	raw := strings.TrimSpace(imageURL)
+	if raw == "" {
+		return "", false
+	}
+
+	pathPart := raw
+	if strings.HasPrefix(raw, "http://") || strings.HasPrefix(raw, "https://") {
+		u, err := url.Parse(raw)
+		if err != nil {
+			return "", false
+		}
+		pathPart = u.Path
+	}
+
+	pathPart = strings.ReplaceAll(pathPart, "\\", "/")
+	idx := strings.Index(pathPart, "/uploads/banners/")
+	if idx < 0 {
+		return "", false
+	}
+	pathPart = pathPart[idx:]
+
+	rel := strings.TrimPrefix(pathPart, "/uploads/") // banners/<file>
+	cleanRel := filepath.Clean(rel)
+	cleanRel = strings.ReplaceAll(cleanRel, "\\", "/")
+	if cleanRel == "." || strings.HasPrefix(cleanRel, "../") || cleanRel == ".." {
+		return "", false
+	}
+	if !strings.HasPrefix(cleanRel, "banners/") {
+		return "", false
+	}
+
+	return filepath.Join(".", "uploads", filepath.FromSlash(cleanRel)), true
+}
+
+func removeLocalBannerImageIfAny(imageURL string) {
+	if fullPath, ok := resolveLocalBannerImagePath(imageURL); ok {
+		if err := os.Remove(fullPath); err != nil && !os.IsNotExist(err) {
+			log.Printf("failed removing banner image %s: %v", fullPath, err)
+		}
+	}
 }
 
 func handleAdminBanners(w http.ResponseWriter, r *http.Request) {
@@ -1231,10 +3122,18 @@ func handleAdminBanners(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		var banner database.Banner
+		if err := database.DB.First(&banner, idStr).Error; err != nil {
+			http.Error(w, "Banner not found", http.StatusNotFound)
+			return
+		}
+		oldImage := banner.Image
+
 		if err := database.DB.Delete(&database.Banner{}, idStr).Error; err != nil {
 			http.Error(w, "Failed to delete banner", http.StatusInternalServerError)
 			return
 		}
+		removeLocalBannerImageIfAny(oldImage)
 
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]string{"message": "Deleted"})
@@ -1260,6 +3159,13 @@ func handleAdminBanners(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "id is required", http.StatusBadRequest)
 			return
 		}
+
+		var currentBanner database.Banner
+		if err := database.DB.First(&currentBanner, req.ID).Error; err != nil {
+			http.Error(w, "Banner not found", http.StatusNotFound)
+			return
+		}
+		oldImage := strings.TrimSpace(currentBanner.Image)
 
 		updates := map[string]any{}
 		if req.Title != nil {
@@ -1294,6 +3200,13 @@ func handleAdminBanners(w http.ResponseWriter, r *http.Request) {
 		if err := database.DB.Model(&database.Banner{}).Where("id = ?", req.ID).Updates(updates).Error; err != nil {
 			http.Error(w, "Failed to update banner", http.StatusInternalServerError)
 			return
+		}
+
+		if req.Image != nil {
+			newImage := strings.TrimSpace(*req.Image)
+			if oldImage != "" && !strings.EqualFold(oldImage, newImage) {
+				removeLocalBannerImageIfAny(oldImage)
+			}
 		}
 
 		var banner database.Banner
@@ -1461,11 +3374,11 @@ func handleAdminBannerImageUpload(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{
-		"url":       urlPath,
-		"size_bytes": written,
-		"width":      width,
-		"height":     height,
-		"max_size":   "1MB",
+		"url":         urlPath,
+		"size_bytes":  written,
+		"width":       width,
+		"height":      height,
+		"max_size":    "1MB",
 		"recommended": "Rasio sekitar 4.7:1 (contoh 1600x340)",
 	})
 }
@@ -1536,9 +3449,72 @@ func handleUserPosts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// GET - list user posts
+	// GET - single or list user posts
+	idStr := strings.TrimSpace(r.URL.Query().Get("id"))
+	if idStr != "" {
+		var post database.UserPost
+		if err := database.DB.First(&post, idStr).Error; err != nil {
+			if err == gorm.ErrRecordNotFound {
+				http.Error(w, "Post not found", http.StatusNotFound)
+				return
+			}
+			http.Error(w, "Failed to fetch post", http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(post)
+		return
+	}
+
+	q := r.URL.Query()
+
+	// Pagination: ?limit=20&before=RFC3339&before_id=123
+	limit := 50
+	if limStr := strings.TrimSpace(q.Get("limit")); limStr != "" {
+		if n, err := strconv.Atoi(limStr); err == nil {
+			if n < 1 {
+				n = 1
+			}
+			if n > 50 {
+				n = 50
+			}
+			limit = n
+		}
+	}
+
+	// Optional filter: only current user's posts.
+	mine := strings.TrimSpace(q.Get("mine"))
+	onlyMine := mine == "1" || strings.EqualFold(mine, "true") || strings.EqualFold(mine, "yes")
+
+	dbq := database.DB.Model(&database.UserPost{})
+	if onlyMine {
+		dbq = dbq.Where("user_id = ?", session.UserID)
+	}
+
+	beforeStr := strings.TrimSpace(q.Get("before"))
+	beforeIDStr := strings.TrimSpace(q.Get("before_id"))
+	if beforeStr != "" {
+		beforeTime, err := time.Parse(time.RFC3339Nano, beforeStr)
+		if err != nil {
+			beforeTime, err = time.Parse(time.RFC3339, beforeStr)
+		}
+		if err == nil {
+			if beforeIDStr != "" {
+				if beforeID, err2 := strconv.ParseUint(beforeIDStr, 10, 64); err2 == nil && beforeID > 0 {
+					// Stable cursor with (created_at, id)
+					dbq = dbq.Where("(created_at < ?) OR (created_at = ? AND id < ?)", beforeTime, beforeTime, uint(beforeID))
+				} else {
+					dbq = dbq.Where("created_at < ?", beforeTime)
+				}
+			} else {
+				dbq = dbq.Where("created_at < ?", beforeTime)
+			}
+		}
+	}
+
 	var posts []database.UserPost
-	database.DB.Order("created_at desc").Limit(50).Find(&posts)
+	dbq.Order("created_at desc").Order("id desc").Limit(limit).Find(&posts)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(posts)

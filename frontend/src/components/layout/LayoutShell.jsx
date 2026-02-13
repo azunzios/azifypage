@@ -14,8 +14,9 @@ function Root(props) {
             sm: 'minmax(64px, 200px) minmax(450px, 1fr)',
             md: 'minmax(160px, 280px) minmax(600px, 1fr)',
           },
-          gridTemplateRows: '64px 1fr',
-          minHeight: '100vh',
+          gridTemplateRows: '64px minmax(0, 1fr)',
+          height: '100vh',
+          overflow: 'hidden',
           bgcolor: 'background.body',
         },
         ...(Array.isArray(props.sx) ? props.sx : [props.sx]),
@@ -62,6 +63,8 @@ function SideNav(props) {
           bgcolor: 'background.surface',
           borderRight: '1px solid',
           borderColor: 'divider',
+          minHeight: 0,
+          overflowY: 'auto',
           display: {
             xs: 'none',
             sm: 'initial',
@@ -78,7 +81,10 @@ function Main(props) {
     <Box
       component="main"
       {...props}
-      sx={[{ p: 2 }, ...(Array.isArray(props.sx) ? props.sx : [props.sx])]}
+      sx={[
+        { p: 2, minHeight: 0, overflowY: 'auto', WebkitOverflowScrolling: 'touch' },
+        ...(Array.isArray(props.sx) ? props.sx : [props.sx]),
+      ]}
     />
   );
 }

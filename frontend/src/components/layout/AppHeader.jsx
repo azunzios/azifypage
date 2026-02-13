@@ -9,6 +9,7 @@ import Avatar from '@mui/joy/Avatar';
 import Input from '@mui/joy/Input';
 import Tooltip from '@mui/joy/Tooltip';
 import Sheet from '@mui/joy/Sheet';
+import Button from '@mui/joy/Button';
 import { useColorScheme } from '@mui/joy/styles';
 import Dropdown from '@mui/joy/Dropdown';
 import Menu from '@mui/joy/Menu';
@@ -55,6 +56,12 @@ function ColorSchemeToggle() {
     );
 }
 
+function formatIDRNumber(value) {
+    const n = typeof value === 'number' ? value : parseInt(String(value || '').replace(/[^0-9]/g, ''), 10);
+    const safe = Number.isFinite(n) ? n : 0;
+    return safe.toLocaleString('id-ID');
+}
+
 export default function AppHeader({ onDrawerToggle }) {
     const { user, logout } = useAuth();
     const navigate = useNavigate();
@@ -77,6 +84,15 @@ export default function AppHeader({ onDrawerToggle }) {
             body: JSON.stringify({ id }),
         });
         setNotifications(notifications.map((n) => (n.id === id ? { ...n, is_read: true } : n)));
+    };
+
+    const markAllAsRead = async () => {
+        await fetch('/api/notifications', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ mark_all: true }),
+        });
+        setNotifications((prev) => prev.map((n) => ({ ...n, is_read: true })));
     };
 
     const handleSearchEnter = async (e) => {
@@ -148,26 +164,27 @@ export default function AppHeader({ onDrawerToggle }) {
                 <ColorSchemeToggle />
 
                 <Sheet
-                    variant="soft"
-                    color="primary"
+                    variant="outlined"
+                    color="neutral"
                     onClick={() => navigate('/balance')}
                     sx={{
                         cursor: 'pointer',
                         display: { xs: 'none', sm: 'inline-flex' },
                         alignItems: 'center',
                         gap: 0.75,
-                        px: 1.25,
-                        py: 0.5,
+                        px: 1.35,
+                        py: 0.55,
                         borderRadius: 999,
                         boxShadow: 'none',
-                        '&:hover': {
-                            filter: 'brightness(0.98)',
-                        },
+                        borderColor: 'primary.400',
+                        color: 'primary.600',
+                        backgroundColor: 'transparent',
+                        transition: 'none',
                     }}
                 >
                     <AccountBalanceWalletIcon fontSize="small" />
-                    <Typography level="body-sm" sx={{ fontWeight: 800, lineHeight: 1 }}>
-                        {user?.balance_formatted || 'Rp 0'}
+                    <Typography level="body-sm" sx={{ fontWeight: 700, lineHeight: 1 }}>
+                        {formatIDRNumber(user?.balance ?? user?.balance_formatted)}
                     </Typography>
                 </Sheet>
 
@@ -188,7 +205,33 @@ export default function AppHeader({ onDrawerToggle }) {
                             <NotificationsIcon fontSize="small" />
                         </Badge>
                     </MenuButton>
-                    <Menu placement="bottom-end" size="sm" sx={{ zIndex: '99999', p: 1, maxHeight: 360, overflow: 'auto' }}>
+                    <Menu
+                        placement="bottom-end"
+                        size="sm"
+                        sx={{
+                            zIndex: '99999',
+                            p: 1,
+                            width: 520,
+                            maxWidth: 'calc(100vw - 24px)',
+                            maxHeight: 360,
+                            overflow: 'auto',
+                        }}
+                    >
+                        <Box sx={{ px: 1, pb: 0.75, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                            <Typography level="title-sm">Notifikasi</Typography>
+                            {unreadCount > 0 ? (
+                                <Button
+                                    size="sm"
+                                    variant="plain"
+                                    color="primary"
+                                    onClick={markAllAsRead}
+                                    sx={{ px: 0.5, minHeight: 28 }}
+                                >
+                                    Baca semua
+                                </Button>
+                            ) : null}
+                        </Box>
+                        <ListDivider />
                         {notifications.length === 0 ? (
                             <MenuItem disabled>Belum ada notifikasi</MenuItem>
                         ) : (
@@ -197,14 +240,28 @@ export default function AppHeader({ onDrawerToggle }) {
                                     <MenuItem
                                         onClick={() => markAsRead(notif.id)}
                                         sx={{
-                                            whiteSpace: 'normal',
+                                            width: '100%',
                                             alignItems: 'flex-start',
                                             bgcolor: !notif.is_read ? 'primary.softBg' : undefined,
                                         }}
                                     >
-                                        <Box>
+                                        <Box sx={{ width: '100%', minWidth: 0 }}>
                                             <Typography level="title-sm">{notif.title}</Typography>
-                                            <Typography level="body-xs">{notif.message}</Typography>
+                                            <Typography
+                                                level="body-xs"
+                                                sx={{
+                                                    mt: 0.25,
+                                                    width: '100%',
+                                                    maxWidth: '100%',
+                                                    overflowX: 'auto',
+                                                    overflowY: 'hidden',
+                                                    whiteSpace: 'nowrap',
+                                                    display: 'block',
+                                                    pr: 1,
+                                                }}
+                                            >
+                                                {notif.message}
+                                            </Typography>
                                         </Box>
                                     </MenuItem>
                                 </ListItem>

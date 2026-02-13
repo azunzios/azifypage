@@ -6,13 +6,20 @@ import Typography from '@mui/material/Typography';
 import AppLayout from './components/layout/AppLayout';
 import TasksPage from './pages/TasksPage';
 import TopUpPage from './pages/TopUpPage';
+import TopupNewPage from './pages/TopupNewPage';
+import TopupReceiptPage from './pages/TopupReceiptPage';
 import SignInPage from './pages/SignInPage';
 import SignUpPage from './pages/SignUpPage';
+import ResetPasswordPage from './pages/ResetPasswordPage';
 import AdminPage from './pages/AdminPage';
+import AdminMonitoringPage from './pages/AdminMonitoringPage';
 import InputLinkPage from './pages/InputLinkPage';
 import ProfilePage from './pages/ProfilePage';
 import InformasiPage from './pages/InformasiPage';
+import InformasiPostPage from './pages/InformasiPostPage';
+import BantuanPage from './pages/BantuanPage';
 import UnggahanPage from './pages/UnggahanPage';
+import UnggahanPostPage from './pages/UnggahanPostPage';
 import SearchPage from './pages/SearchPage';
 import AvailableHostsPage from './pages/AvailableHostsPage';
 
@@ -68,6 +75,7 @@ function AppContent() {
       <Route path="/" element={user ? <Navigate to="/download" replace /> : <Navigate to="/login" replace />} />
       <Route path="/login" element={user ? <Navigate to="/download" replace /> : <SignInPage />} />
       <Route path="/register" element={user ? <Navigate to="/download" replace /> : <SignUpPage />} />
+      <Route path="/reset-password" element={<ResetPasswordPage />} />
       <Route
         path="/download"
         element={
@@ -85,10 +93,26 @@ function AppContent() {
         }
       />
       <Route
+        path="/informasi/post/:id"
+        element={
+          <ProtectedRoute>
+            <InformasiPostPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
         path="/unggahan"
         element={
           <ProtectedRoute>
             <UnggahanPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/unggahan/post/:id"
+        element={
+          <ProtectedRoute>
+            <UnggahanPostPage />
           </ProtectedRoute>
         }
       />
@@ -105,6 +129,14 @@ function AppContent() {
         element={
           <ProtectedRoute>
             <AvailableHostsPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/bantuan"
+        element={
+          <ProtectedRoute>
+            <BantuanPage />
           </ProtectedRoute>
         }
       />
@@ -133,10 +165,34 @@ function AppContent() {
         }
       />
       <Route
+        path="/topup/new"
+        element={
+          <ProtectedRoute>
+            <TopupNewPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/topup"
+        element={
+          <ProtectedRoute>
+            <TopupReceiptPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
         path="/admin"
         element={
           <AdminRoute>
             <AdminPage />
+          </AdminRoute>
+        }
+      />
+      <Route
+        path="/admin/monitoring"
+        element={
+          <AdminRoute>
+            <AdminMonitoringPage />
           </AdminRoute>
         }
       />
