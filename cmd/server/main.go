@@ -45,6 +45,15 @@ var forgotPasswordCooldownMu sync.Mutex
 var forgotPasswordCooldown = make(map[string]time.Time)
 var premiumAPISemaphore = make(chan struct{}, 1)
 
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
+}
+
 // generateFolderName creates a folder name from email: username_XXXX (4 random hex chars)
 func generateFolderName(email string) string {
 	// Extract username from email
@@ -165,6 +174,7 @@ func main() {
 
 	// User & Database API Endpoints (protected)
 	http.HandleFunc("/api/user", auth.RequireAuth(handleGetUser))
+	http.HandleFunc("/api/user/photo", auth.RequireAuth(handleUserPhotoUpload))
 	http.HandleFunc("/api/user/email", auth.RequireAuth(handleSendVerificationEmail))
 	http.HandleFunc("/api/notifications", auth.RequireAuth(handleNotifications))
 	http.HandleFunc("/api/transactions", auth.RequireAuth(handleTransactions))
@@ -514,7 +524,7 @@ func handleAuthMe(w http.ResponseWriter, r *http.Request) {
 		"id":                   user.ID,
 		"email":                user.Email,
 		"name":                 session.Name,
-		"picture":              session.Picture,
+		"picture":              firstNonEmpty(user.Picture, session.Picture),
 		"role":                 user.Role,
 		"email_verified":       user.EmailVerified,
 		"balance":              user.Balance,
@@ -871,6 +881,7 @@ func handleGetUser(w http.ResponseWriter, r *http.Request) {
 	response := map[string]any{
 		"id":                   user.ID,
 		"email":                user.Email,
+		"picture":              firstNonEmpty(user.Picture, session.Picture),
 		"email_verified":       user.EmailVerified,
 		"balance":              user.Balance,
 		"balance_formatted":    fmt.Sprintf("Rp %d", user.Balance),
@@ -882,6 +893,107 @@ func handleGetUser(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(response)
+}
+
+func handleUserPhotoUpload(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	session := auth.GetSessionFromRequest(r)
+	if session == nil {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	if err := r.ParseMultipartForm(2 * 1024 * 1024); err != nil {
+		http.Error(w, "Invalid multipart form", http.StatusBadRequest)
+		return
+	}
+
+	file, header, err := r.FormFile("photo")
+	if err != nil {
+		http.Error(w, "photo file is required", http.StatusBadRequest)
+		return
+	}
+	defer file.Close()
+
+	if header.Size > 1*1024*1024 {
+		http.Error(w, "ukuran file melebihi 1MB", http.StatusBadRequest)
+		return
+	}
+
+	buffer := make([]byte, 512)
+	n, readErr := file.Read(buffer)
+	if readErr != nil && readErr != io.EOF {
+		http.Error(w, "gagal membaca file", http.StatusBadRequest)
+		return
+	}
+
+	contentType := http.DetectContentType(buffer[:n])
+	ext := ""
+	switch contentType {
+	case "image/jpeg":
+		ext = ".jpg"
+	case "image/png":
+		ext = ".png"
+	case "image/gif":
+		ext = ".gif"
+	default:
+		http.Error(w, "format gambar tidak didukung (gunakan jpg/png/gif)", http.StatusBadRequest)
+		return
+	}
+
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		http.Error(w, "gagal reset file", http.StatusBadRequest)
+		return
+	}
+
+	uploadDir := filepath.Join(".", "uploads", "profiles")
+	if err := os.MkdirAll(uploadDir, 0755); err != nil {
+		http.Error(w, "Failed to create upload directory", http.StatusInternalServerError)
+		return
+	}
+
+	randomPart := make([]byte, 8)
+	rand.Read(randomPart)
+	filename := fmt.Sprintf("profile_%d_%s%s", session.UserID, hex.EncodeToString(randomPart), ext)
+	fullPath := filepath.Join(uploadDir, filename)
+
+	outFile, err := os.Create(fullPath)
+	if err != nil {
+		http.Error(w, "Failed to create image file", http.StatusInternalServerError)
+		return
+	}
+	defer outFile.Close()
+
+	written, err := io.Copy(outFile, io.LimitReader(file, 1*1024*1024+1))
+	if err != nil {
+		http.Error(w, "Failed to save image", http.StatusInternalServerError)
+		return
+	}
+
+	if written > 1*1024*1024 {
+		os.Remove(fullPath)
+		http.Error(w, "ukuran file melebihi 1MB", http.StatusBadRequest)
+		return
+	}
+
+	urlPath := "/uploads/profiles/" + filename
+	if err := database.DB.Model(&database.User{}).Where("id = ?", session.UserID).Update("picture", urlPath).Error; err != nil {
+		os.Remove(fullPath)
+		http.Error(w, "Failed to update profile picture", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{
+		"success":    true,
+		"message":    "Foto profil berhasil diperbarui",
+		"picture":    urlPath,
+		"size_bytes": written,
+	})
 }
 
 func handleNotifications(w http.ResponseWriter, r *http.Request) {

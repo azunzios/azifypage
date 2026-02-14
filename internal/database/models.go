@@ -16,6 +16,7 @@ type User struct {
 	Password           string     `gorm:"not null" json:"-"`
 	Role               string     `gorm:"default:'client'" json:"role"` // "client" or "admin"
 	IsActive           bool       `gorm:"default:true" json:"is_active"`
+	Picture            string     `json:"picture"`
 	Balance            int64      `gorm:"default:0" json:"balance"`
 	PikPakFolderID     string     `json:"pikpak_folder_id"`   // User's dedicated folder in PikPak
 	PikPakFolderName   string     `json:"pikpak_folder_name"` // Folder name (username_XXXX)
