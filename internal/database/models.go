@@ -8,6 +8,7 @@ import (
 type User struct {
 	ID                 uint       `gorm:"primaryKey" json:"id"`
 	Email              string     `gorm:"unique;not null" json:"email"`
+	Name               string     `json:"name"`
 	EmailVerified      bool       `gorm:"default:false" json:"email_verified"`
 	EmailVerifyToken   string     `gorm:"index" json:"-"`
 	EmailVerifyExp     *time.Time `json:"-"`

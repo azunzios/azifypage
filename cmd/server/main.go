@@ -175,6 +175,9 @@ func main() {
 	// User & Database API Endpoints (protected)
 	http.HandleFunc("/api/user", auth.RequireAuth(handleGetUser))
 	http.HandleFunc("/api/user/photo", auth.RequireAuth(handleUserPhotoUpload))
+	http.HandleFunc("/api/user/name", auth.RequireAuth(handleUserNameUpdate))
+	http.HandleFunc("/api/user/password", auth.RequireAuth(handleUserPasswordUpdate))
+	http.HandleFunc("/api/user/delete", auth.RequireAuth(handleUserDelete))
 	http.HandleFunc("/api/user/email", auth.RequireAuth(handleSendVerificationEmail))
 	http.HandleFunc("/api/notifications", auth.RequireAuth(handleNotifications))
 	http.HandleFunc("/api/transactions", auth.RequireAuth(handleTransactions))
@@ -290,6 +293,7 @@ func handleGoogleCallback(w http.ResponseWriter, r *http.Request) {
 
 		// Create new user
 		user = database.User{
+			Name:             firstNonEmpty(strings.TrimSpace(googleUser.Name), googleUser.Email),
 			Email:            googleUser.Email,
 			EmailVerified:    true,
 			Balance:          0,
@@ -315,7 +319,7 @@ func handleGoogleCallback(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Akun dinonaktifkan", http.StatusForbidden)
 		return
 	}
-	sessionID := auth.CreateSession(user.ID, user.Email, googleUser.Name, googleUser.Picture, user.Role)
+	sessionID := auth.CreateSession(user.ID, user.Email, firstNonEmpty(user.Name, googleUser.Name, user.Email), googleUser.Picture, user.Role)
 	auth.SetSessionCookie(w, sessionID)
 
 	// Redirect to home
@@ -372,7 +376,7 @@ func handleManualLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Create session
-	sessionID := auth.CreateSession(user.ID, user.Email, user.Email, "", user.Role)
+	sessionID := auth.CreateSession(user.ID, user.Email, firstNonEmpty(user.Name, user.Email), "", user.Role)
 	auth.SetSessionCookie(w, sessionID)
 
 	w.Header().Set("Content-Type", "application/json")
@@ -444,6 +448,7 @@ func handleRegister(w http.ResponseWriter, r *http.Request) {
 
 	// Create user
 	user := database.User{
+		Name:             req.Email,
 		Email:            req.Email,
 		Password:         hashedPassword,
 		IsActive:         true,
@@ -467,7 +472,7 @@ func handleRegister(w http.ResponseWriter, r *http.Request) {
 	database.DB.Create(&notification)
 
 	// Create session and log them in
-	sessionID := auth.CreateSession(user.ID, user.Email, user.Email, "", user.Role)
+	sessionID := auth.CreateSession(user.ID, user.Email, firstNonEmpty(user.Name, user.Email), "", user.Role)
 	auth.SetSessionCookie(w, sessionID)
 
 	w.Header().Set("Content-Type", "application/json")
@@ -523,7 +528,7 @@ func handleAuthMe(w http.ResponseWriter, r *http.Request) {
 		"authenticated":        true,
 		"id":                   user.ID,
 		"email":                user.Email,
-		"name":                 session.Name,
+		"name":                 firstNonEmpty(user.Name, session.Name, user.Email),
 		"picture":              firstNonEmpty(user.Picture, session.Picture),
 		"role":                 user.Role,
 		"email_verified":       user.EmailVerified,
@@ -994,6 +999,195 @@ func handleUserPhotoUpload(w http.ResponseWriter, r *http.Request) {
 		"picture":    urlPath,
 		"size_bytes": written,
 	})
+}
+
+func handleUserNameUpdate(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPut {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	session := auth.GetSessionFromRequest(r)
+	if session == nil {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	var req struct {
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Invalid request"})
+		return
+	}
+
+	name := strings.TrimSpace(req.Name)
+	if name == "" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Nama tidak boleh kosong"})
+		return
+	}
+	if len([]rune(name)) > 80 {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Nama terlalu panjang"})
+		return
+	}
+
+	if err := database.DB.Model(&database.User{}).Where("id = ?", session.UserID).Update("name", name).Error; err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Gagal mengubah nama"})
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{"success": true, "name": name})
+}
+
+func handleUserPasswordUpdate(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPut {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	session := auth.GetSessionFromRequest(r)
+	if session == nil {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	var req struct {
+		CurrentPassword string `json:"current_password"`
+		NewPassword     string `json:"new_password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Invalid request"})
+		return
+	}
+
+	if strings.TrimSpace(req.CurrentPassword) == "" || strings.TrimSpace(req.NewPassword) == "" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Password lama dan baru wajib diisi"})
+		return
+	}
+	if len(req.NewPassword) < 6 {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Password baru minimal 6 karakter"})
+		return
+	}
+
+	var user database.User
+	if err := database.DB.First(&user, session.UserID).Error; err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		json.NewEncoder(w).Encode(map[string]string{"error": "User tidak ditemukan"})
+		return
+	}
+
+	if !auth.CheckPassword(user.Password, req.CurrentPassword) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Password lama salah"})
+		return
+	}
+
+	hashedPassword, err := auth.HashPassword(req.NewPassword)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Gagal memproses password"})
+		return
+	}
+
+	if err := database.DB.Model(&database.User{}).Where("id = ?", session.UserID).Update("password", hashedPassword).Error; err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Gagal mengubah password"})
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{"success": true, "message": "Password berhasil diubah"})
+}
+
+func handleUserDelete(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodDelete {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	session := auth.GetSessionFromRequest(r)
+	if session == nil {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	err := database.DB.Transaction(func(tx *gorm.DB) error {
+		uid := session.UserID
+
+		if err := tx.Where("user_id = ?", uid).Delete(&database.VoucherUsage{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("user_id = ?", uid).Delete(&database.UserPostReply{}).Error; err != nil {
+			return err
+		}
+
+		var postIDs []uint
+		if err := tx.Model(&database.UserPost{}).Where("user_id = ?", uid).Pluck("id", &postIDs).Error; err != nil {
+			return err
+		}
+		if len(postIDs) > 0 {
+			if err := tx.Where("post_id IN ?", postIDs).Delete(&database.UserPostReply{}).Error; err != nil {
+				return err
+			}
+		}
+		if err := tx.Where("user_id = ?", uid).Delete(&database.UserPost{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("user_id = ?", uid).Delete(&database.UserUsage{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("user_id = ?", uid).Delete(&database.PremiumRequest{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("user_id = ?", uid).Delete(&database.TopUpRequest{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("user_id = ?", uid).Delete(&database.Transaction{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("user_id = ?", uid).Delete(&database.Notification{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Delete(&database.User{}, uid).Error; err != nil {
+			return err
+		}
+
+		return nil
+	})
+
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"message": "Gagal menghapus akun"})
+		return
+	}
+
+	if cookie, err := r.Cookie(auth.SessionCookieName); err == nil {
+		auth.DeleteSession(cookie.Value)
+	}
+	auth.ClearSessionCookie(w)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{"success": true, "message": "Akun berhasil dihapus"})
 }
 
 func handleNotifications(w http.ResponseWriter, r *http.Request) {
