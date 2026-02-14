@@ -61,7 +61,16 @@ export default function Content() {
 
     return (
         <Stack
-            sx={{ flexDirection: 'column', alignSelf: 'center', gap: 4, maxWidth: 450 }}
+            sx={{ 
+                flexDirection: 'column', 
+                alignSelf: { xs: 'center', md: 'center' },
+                gap: { xs: 2.5, md: 4 },
+                maxWidth: { xs: '100%', sm: 450 },
+                width: '100%',
+                mb: { xs: 4, md: 0 },
+                display: 'flex',
+                minHeight: '100dvh'
+            }}
         >
             <Box sx={{ display: { xs: 'none', md: 'flex' } }}>
                 <AppIcon />
@@ -78,7 +87,8 @@ export default function Content() {
             </Typography>
 
             {/* Premium brand logos */}
-            <Box>
+            <Box
+            >
                 <Typography
                     variant="body2"
                     sx={{ color: 'text.secondary', mb: 1.5, fontWeight: 500, fontFamily: brandFont }}
@@ -88,10 +98,14 @@ export default function Content() {
                 <Box
                     sx={{
                         position: 'relative',
-                        borderRadius: 2,
-                        border: '1px solid',
+                        borderRadius: { xs: 0, sm: 2 },
+                        borderStyle: 'solid',
+                        borderWidth: '1px 0',
                         borderColor: 'divider',
-                        p: 2,
+                        p: { xs: 1.5, sm: 2 },
+                        width: { xs: '100vw', sm: '100%' },
+                        maxWidth: { xs: '100vw', sm: 'none' },
+                        mx: { xs: 'calc(50% - 50vw)', sm: 0 },
                         boxShadow: isDark
                             ? 'inset 0 2px 8px rgba(0,0,0,0.3), inset 0 -2px 8px rgba(0,0,0,0.3)'
                             : 'inset 0 2px 8px rgba(0,0,0,0.06), inset 0 -2px 8px rgba(0,0,0,0.06)',
@@ -101,24 +115,34 @@ export default function Content() {
                             position: 'absolute',
                             top: 0,
                             left: 0,
-                            width: 44,
+                            width: 80,
                             height: '100%',
-                            background:
-                                'linear-gradient(to right, var(--joy-palette-background-surface, var(--joy-palette-background-body, #fff)), transparent)',
+                            background: isDark
+                                ? 'radial-gradient(ellipse at left center, rgba(0,0,0,0.9) 0%, rgba(0,0,0,0.55) 35%, rgba(0,0,0,0) 70%)'
+                                : 'radial-gradient(ellipse at left center, rgba(255,255,255,0.9) 0%, rgba(255,255,255,0.6) 35%, rgba(255,255,255,0) 70%)',
                             zIndex: 2,
                             pointerEvents: 'none',
+                            WebkitMaskImage:
+                                'linear-gradient(to bottom, transparent 0%, #000 20%, #000 80%, transparent 100%)',
+                            maskImage:
+                                'linear-gradient(to bottom, transparent 0%, #000 20%, #000 80%, transparent 100%)',
                         },
                         '&::after': {
                             content: '""',
                             position: 'absolute',
                             top: 0,
                             right: 0,
-                            width: 44,
+                            width: 80,
                             height: '100%',
-                            background:
-                                'linear-gradient(to left, var(--joy-palette-background-surface, var(--joy-palette-background-body, #fff)), transparent)',
+                            background: isDark
+                                ? 'radial-gradient(ellipse at right center, rgba(0,0,0,0.9) 0%, rgba(0,0,0,0.55) 35%, rgba(0,0,0,0) 70%)'
+                                : 'radial-gradient(ellipse at right center, rgba(255,255,255,0.9) 0%, rgba(255,255,255,0.6) 35%, rgba(255,255,255,0) 70%)',
                             zIndex: 2,
                             pointerEvents: 'none',
+                            WebkitMaskImage:
+                                'linear-gradient(to bottom, transparent 0%, #000 20%, #000 80%, transparent 100%)',
+                            maskImage:
+                                'linear-gradient(to bottom, transparent 0%, #000 20%, #000 80%, transparent 100%)',
                         },
                     }}
                 >
@@ -136,19 +160,16 @@ export default function Content() {
                                 alignItems: 'center',
                                 gap: 1.5,
                                 pr: 1.5,
-                                animation: `${marquee} 26s linear infinite`,
+                                animation: `${marquee} 45s linear infinite`,
                                 willChange: 'transform',
-                                '&:hover': {
-                                    animationPlayState: 'paused',
-                                },
                                 '@media (prefers-reduced-motion: reduce)': {
                                     animation: 'none',
                                     transform: 'none',
                                 },
                             }}
                         >
-                            {[...brands, { name: '+50 lainnya', logo: null }].concat(
-                                [...brands, { name: '+50 lainnya', logo: null }]
+                            {[...brands, { name: 'dan lainnya', logo: null }].concat(
+                                [...brands, { name: 'dan lainnya', logo: null }]
                             ).map((brand, idx) => {
                                 if (!brand.logo) {
                                     return (
@@ -197,9 +218,9 @@ export default function Content() {
                     </Box>
                 </Box>
             </Box>
-
+            <Box>
             {items.map((item, index) => (
-                <Stack key={index} direction="row" sx={{ gap: 2 }}>
+                <Stack key={index} direction="row" sx={{ gap: 2, mb: { xs: 1, md: 2 } }}>
                     {item.icon}
                     <div>
                         <Typography
@@ -218,6 +239,7 @@ export default function Content() {
                     </div>
                 </Stack>
             ))}
+            </Box>
         </Stack>
     );
 }

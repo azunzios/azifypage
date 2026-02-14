@@ -103,7 +103,15 @@ export default function SignInPage() {
     };
 
     return (
-        <React.Fragment>
+        <Box sx={{ 
+            padding: {xs:4, md:0},
+            width: '100%', 
+            minHeight: '100dvh',
+            position: 'relative',
+            display: 'flex',
+            flexDirection: 'column',
+            overflowY: 'auto',
+        }}>
             <Box sx={{ position: 'fixed', top: '1rem', right: '1rem', zIndex: 1300 }}>
                 <Tooltip title="Ganti tema">
                     <IconButton
@@ -125,10 +133,11 @@ export default function SignInPage() {
                 component="main"
                 sx={[
                     {
-                        justifyContent: 'center',
-                        height: 'calc((1 - var(--template-frame-height, 0)) * 100%)',
-                           marginTop: 'max(16px - var(--template-frame-height, 0px), 0px)',
-                        minHeight: '100%',
+                        justifyContent: { xs: 'flex-start', md: 'center' },
+                        minHeight: { xs: 'auto', md: '100vh' },
+                        width: '100%',
+                        maxWidth: '100vw',
+                        position: 'relative',
                     },
                     {
                         '&::before': {
@@ -150,9 +159,15 @@ export default function SignInPage() {
                     direction={{ xs: 'column-reverse', md: 'row' }}
                     sx={{
                         justifyContent: 'center',
-                        gap: { xs: 6, sm: 12 },
-                           p: { xs: 1.5, sm: 3 },
-                        m: 'auto',
+                        alignItems: { xs: 'stretch', md: 'flex-start' },
+                        gap: { xs: 3, sm: 12 },
+                        p: { xs: 2, sm: 3 },
+                        py: { xs: 3, sm: 3 },
+                        pb: { xs: 6, sm: 3 },
+                        m: { xs: 0, md: 'auto' },
+                        width: '100%',
+                        maxWidth: '100%',
+                        overflow: 'visible',
                     }}
                 >
                     <Content />
@@ -291,6 +306,6 @@ export default function SignInPage() {
                     </MuiCard>
                 </Stack>
             </Stack>
-        </React.Fragment>
+        </Box>
     );
 }
