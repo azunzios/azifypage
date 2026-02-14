@@ -184,6 +184,8 @@ type UserPost struct {
 	Content     string    `gorm:"type:text;not null" json:"content"`
 	AuthorName  string    `json:"author_name"`
 	AuthorEmail string    `json:"author_email"`
+	Picture     string    `json:"picture"` // User's profile picture URL
+	Role        string    `json:"role"`    // User's role (admin, client, etc)
 	CreatedAt   time.Time `json:"created_at"`
 }
 
@@ -195,6 +197,8 @@ type UserPostReply struct {
 	Content     string    `gorm:"type:text;not null" json:"content"`
 	AuthorName  string    `json:"author_name"`
 	AuthorEmail string    `json:"author_email"`
+	Picture     string    `json:"picture"` // User's profile picture URL
+	Role        string    `json:"role"`    // User's role (admin, client, etc)
 	CreatedAt   time.Time `json:"created_at"`
 }
 

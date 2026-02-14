@@ -905,21 +905,23 @@ export default function AdminPage() {
                 <Tabs
                     value={activeTab}
                     onChange={(e, v) => setActiveTab(v)}
-                    sx={{ borderBottom: '1px solid', borderColor: 'divider', px: 2 }}
+                    variant="scrollable"
+                    scrollButtons="auto"
+                    sx={{ borderBottom: '1px solid', borderColor: 'divider', px: { xs: 1, sm: 2 } }}
                 >
-                    <Tab label="Harga" sx={{ textTransform: 'none' }} />
-                    <Tab label="Users" sx={{ textTransform: 'none' }} />
-                    <Tab label="Available Host" sx={{ textTransform: 'none' }} />
-                    <Tab label="Banner" sx={{ textTransform: 'none' }} />
-                    <Tab label="Informasi Resmi" sx={{ textTransform: 'none' }} />
-                    <Tab label="Voucher" sx={{ textTransform: 'none' }} />
+                    <Tab label="Harga" sx={{ textTransform: 'none', minWidth: 100 }} />
+                    <Tab label="Users" sx={{ textTransform: 'none', minWidth: 100 }} />
+                    <Tab label="Available Host" sx={{ textTransform: 'none', minWidth: 140 }} />
+                    <Tab label="Banner" sx={{ textTransform: 'none', minWidth: 100 }} />
+                    <Tab label="Informasi Resmi" sx={{ textTransform: 'none', minWidth: 130 }} />
+                    <Tab label="Voucher" sx={{ textTransform: 'none', minWidth: 110 }} />
                     <Tab
                         label={
                             <Badge color="warning" badgeContent={pendingTopupCount} invisible={pendingTopupCount <= 0}>
                                 <span>Top Up</span>
                             </Badge>
                         }
-                        sx={{ textTransform: 'none' }}
+                        sx={{ textTransform: 'none', minWidth: 100 }}
                     />
                 </Tabs>
 
@@ -2124,6 +2126,11 @@ export default function AdminPage() {
                 autoHideDuration={3000}
                 onClose={() => setMessage('')}
                 message={message}
+                sx={{
+                    '& .MuiSnackbarContent-root': {
+                        maxWidth: { xs: 'calc(100vw - 32px)', sm: 'auto' },
+                    },
+                }}
             />
         </Box>
     );

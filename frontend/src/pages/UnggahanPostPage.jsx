@@ -11,9 +11,11 @@ import Avatar from '@mui/material/Avatar';
 import IconButton from '@mui/material/IconButton';
 import Tooltip from '@mui/material/Tooltip';
 import TextField from '@mui/material/TextField';
+import Chip from '@mui/material/Chip';
 import AccessTimeIcon from '@mui/icons-material/AccessTime';
 import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
 import SendIcon from '@mui/icons-material/Send';
+import BuildIcon from '@mui/icons-material/Build';
 
 import { useAuth } from '../App';
 
@@ -35,6 +37,7 @@ export default function UnggahanPostPage() {
     const [postingReply, setPostingReply] = useState(false);
     const [replyDraft, setReplyDraft] = useState('');
     const [errorText, setErrorText] = useState('');
+    const [failedPictures, setFailedPictures] = useState({});
 
     const refresh = async () => {
         if (!id) {
@@ -177,15 +180,34 @@ export default function UnggahanPostPage() {
                 ) : (
                     <Box>
                         <Box sx={{ display: 'flex', gap: 1.5, alignItems: 'flex-start' }}>
-                            <Avatar sx={{ width: 36, height: 36, bgcolor: 'primary.main', fontSize: 14, fontWeight: 800, flexShrink: 0 }}>
-                                {(post.author_name || post.author_email || 'U').charAt(0).toUpperCase()}
-                            </Avatar>
+                            {post.picture && !failedPictures['post'] ? (
+                                <Avatar 
+                                    src={post.picture} 
+                                    sx={{ width: 36, height: 36, flexShrink: 0 }}
+                                    onError={() => setFailedPictures((prev) => ({ ...prev, 'post': true }))}
+                                />
+                            ) : (
+                                <Avatar sx={{ width: 36, height: 36, bgcolor: 'primary.main', fontSize: 14, fontWeight: 800, flexShrink: 0 }}>
+                                    {(post.author_name || post.author_email || 'U').charAt(0).toUpperCase()}
+                                </Avatar>
+                            )}
                             <Box sx={{ flex: 1, minWidth: 0 }}>
                                 <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 1, flexWrap: 'wrap' }}>
                                     <Box sx={{ minWidth: 0 }}>
-                                        <Typography variant="body2" fontWeight={700} noWrap>
-                                            {post.author_name || post.author_email?.split('@')[0] || 'Pengguna'}
-                                        </Typography>
+                                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                                            <Typography variant="body2" fontWeight={700} noWrap>
+                                                {post.author_name || post.author_email?.split('@')[0] || 'Pengguna'}
+                                            </Typography>
+                                            {post.role === 'admin' && (
+                                                <Chip
+                                                    icon={<BuildIcon sx={{ fontSize: 14 }} />}
+                                                    label="Admin"
+                                                    size="small"
+                                                    color="primary"
+                                                    sx={{ height: 20, fontSize: 11 }}
+                                                />
+                                            )}
+                                        </Box>
                                         <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, mt: 0.25 }}>
                                             <AccessTimeIcon sx={{ fontSize: 13, color: 'text.disabled' }} />
                                             <Typography variant="caption" color="text.disabled">
@@ -233,14 +255,33 @@ export default function UnggahanPostPage() {
                                     const isReplyOwner = r.user_id === user?.id;
                                     return (
                                         <Box key={r.id} sx={{ display: 'flex', gap: 1.5 }}>
-                                            <Avatar sx={{ width: 28, height: 28, bgcolor: isReplyOwner ? 'primary.main' : 'grey.700', fontSize: 12, fontWeight: 800, flexShrink: 0 }}>
-                                                {(r.author_name || r.author_email || 'U').charAt(0).toUpperCase()}
-                                            </Avatar>
+                                            {r.picture && !failedPictures[`reply-${r.id}`] ? (
+                                                <Avatar 
+                                                    src={r.picture} 
+                                                    sx={{ width: 28, height: 28, flexShrink: 0 }}
+                                                    onError={() => setFailedPictures((prev) => ({ ...prev, [`reply-${r.id}`]: true }))}
+                                                />
+                                            ) : (
+                                                <Avatar sx={{ width: 28, height: 28, bgcolor: isReplyOwner ? 'primary.main' : 'grey.700', fontSize: 12, fontWeight: 800, flexShrink: 0 }}>
+                                                    {(r.author_name || r.author_email || 'U').charAt(0).toUpperCase()}
+                                                </Avatar>
+                                            )}
                                             <Box sx={{ flex: 1, minWidth: 0 }}>
                                                 <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 1 }}>
-                                                    <Typography variant="caption" fontWeight={800}>
-                                                        {r.author_name || r.author_email?.split('@')[0] || 'Pengguna'}
-                                                    </Typography>
+                                                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                                                        <Typography variant="caption" fontWeight={800}>
+                                                            {r.author_name || r.author_email?.split('@')[0] || 'Pengguna'}
+                                                        </Typography>
+                                                        {r.role === 'admin' && (
+                                                            <Chip
+                                                                icon={<BuildIcon sx={{ fontSize: 12 }} />}
+                                                                label="Admin"
+                                                                size="small"
+                                                                color="primary"
+                                                                sx={{ height: 18, fontSize: 10 }}
+                                                            />
+                                                        )}
+                                                    </Box>
                                                     {isReplyOwner ? (
                                                         <Tooltip title="Hapus balasan">
                                                             <IconButton size="small" color="error" onClick={() => handleDeleteReply(r.id)}>
@@ -262,9 +303,17 @@ export default function UnggahanPostPage() {
                         <Divider sx={{ my: 2 }} />
 
                         <Box sx={{ display: 'flex', gap: 1.25, alignItems: 'flex-start' }}>
-                            <Avatar sx={{ width: 28, height: 28, bgcolor: 'primary.main', fontSize: 12, fontWeight: 800, flexShrink: 0 }}>
-                                {user?.email?.charAt(0).toUpperCase() || 'U'}
-                            </Avatar>
+                            {user?.picture && !failedPictures['user'] ? (
+                                <Avatar 
+                                    src={user.picture} 
+                                    sx={{ width: 28, height: 28, flexShrink: 0 }}
+                                    onError={() => setFailedPictures((prev) => ({ ...prev, 'user': true }))}
+                                />
+                            ) : (
+                                <Avatar sx={{ width: 28, height: 28, bgcolor: 'primary.main', fontSize: 12, fontWeight: 800, flexShrink: 0 }}>
+                                    {user?.email?.charAt(0).toUpperCase() || 'U'}
+                                </Avatar>
+                            )}
                             <Box sx={{ flex: 1 }}>
                                 <TextField
                                     fullWidth

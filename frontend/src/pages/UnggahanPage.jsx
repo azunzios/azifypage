@@ -17,6 +17,7 @@ import IconButton from '@mui/material/IconButton';
 import Tooltip from '@mui/material/Tooltip';
 import Collapse from '@mui/material/Collapse';
 import Divider from '@mui/material/Divider';
+import Chip from '@mui/material/Chip';
 import AccessTimeIcon from '@mui/icons-material/AccessTime';
 import SendIcon from '@mui/icons-material/Send';
 import ForumIcon from '@mui/icons-material/Forum';
@@ -24,7 +25,7 @@ import PublicIcon from '@mui/icons-material/Public';
 import PersonIcon from '@mui/icons-material/Person';
 import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
 import ChatBubbleOutlineIcon from '@mui/icons-material/ChatBubbleOutline';
-import LaunchIcon from '@mui/icons-material/Launch';
+import BuildIcon from '@mui/icons-material/Build';
 import { useAuth } from '../App';
 
 export default function UnggahanPage() {
@@ -46,6 +47,7 @@ export default function UnggahanPage() {
     const [replyPosting, setReplyPosting] = useState({});
     const [replyDraft, setReplyDraft] = useState({});
     const [repliesByPost, setRepliesByPost] = useState({});
+    const [failedPictures, setFailedPictures] = useState({});
 
     const loadMoreRef = useRef(null);
 
@@ -307,9 +309,17 @@ export default function UnggahanPage() {
             <Card variant="outlined" sx={{ mb: 3, borderRadius: 0 }}>
                 <CardContent sx={{ p: 2.5, '&:last-child': { pb: 2.5 } }}>
                     <Box sx={{ display: 'flex', gap: 2 }}>
-                        <Avatar sx={{ width: 36, height: 36, bgcolor: 'primary.main', fontSize: 14, fontWeight: 700, flexShrink: 0 }}>
-                            {user?.email?.charAt(0).toUpperCase() || 'U'}
-                        </Avatar>
+                        {user?.picture && !failedPictures['user'] ? (
+                            <Avatar 
+                                src={user.picture} 
+                                sx={{ width: 36, height: 36, flex: 'none' }}
+                                onError={() => setFailedPictures((prev) => ({ ...prev, 'user': true }))}
+                            />
+                        ) : (
+                            <Avatar sx={{ width: 36, height: 36, bgcolor: 'primary.main', fontSize: 14, fontWeight: 700, flexShrink: 0 }}>
+                                {user?.email?.charAt(0).toUpperCase() || 'U'}
+                            </Avatar>
+                        )}
                         <Box sx={{ flex: 1 }}>
                             <TextField
                                 fullWidth
@@ -380,51 +390,56 @@ export default function UnggahanPage() {
                             >
                                 <CardContent sx={{ p: 2.5, '&:last-child': { pb: 2.5 } }}>
                                     <Box sx={{ display: 'flex', gap: 2 }}>
-                                        <Avatar sx={{ width: 36, height: 36, bgcolor: isOwner ? 'primary.main' : 'secondary.main', fontSize: 14, fontWeight: 700, flexShrink: 0 }}>
-                                            {(post.author_name || post.author_email || 'U').charAt(0).toUpperCase()}
-                                        </Avatar>
+                                        {post.picture && !failedPictures[post.id] ? (
+                                            <Avatar 
+                                                src={post.picture} 
+                                                sx={{ width: 36, height: 36, flex: 'none', fontSize: 14, fontWeight: 700 }}
+                                                onError={() => setFailedPictures((prev) => ({ ...prev, [post.id]: true }))}
+                                            />
+                                        ) : (
+                                            <Avatar sx={{ width: 36, height: 36, bgcolor: isOwner ? 'primary.main' : 'secondary.main', fontSize: 14, fontWeight: 700, flexShrink: 0 }}>
+                                                {(post.author_name || post.author_email || 'U').charAt(0).toUpperCase()}
+                                            </Avatar>
+                                        )}
                                         <Box sx={{ flex: 1, minWidth: 0 }}>
-                                            <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 0.5 }}>
-                                                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                                                    <Typography variant="body2" fontWeight={600}>
-                                                        {post.author_name || post.author_email?.split('@')[0] || 'Pengguna'}
-                                                    </Typography>
-                                                    {isOwner && (
-                                                        <Typography variant="caption" sx={{ color: 'primary.main', fontWeight: 500 }}>
-                                                            (Kamu)
+                                            {/* Header: Name, Badge, Buttons, Time */}
+                                            <Box sx={{ display: 'flex', flexDirection: { xs: 'column', sm: 'row' }, alignItems: { xs: 'flex-start', sm: 'flex-start' }, justifyContent: 'space-between', gap: { xs: 1, sm: 1 }, mb: 1 }}>
+                                                {/* Left: Name, Badge, and Actions */}
+                                                <Box sx={{ display: 'flex', flexDirection: { xs: 'column', sm: 'row' }, alignItems: { xs: 'flex-start', sm: 'center' }, gap: 1, flex: 1, minWidth: 0, flexWrap: 'wrap' }}>
+                                                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                                                        <Typography variant="body2" fontWeight={600} sx={{ whiteSpace: 'nowrap' }}>
+                                                            {post.author_name || post.author_email?.split('@')[0] || 'Pengguna'}
                                                         </Typography>
-                                                    )}
+                                                        {isOwner && (
+                                                            <Typography variant="caption" sx={{ color: 'primary.main', fontWeight: 500, whiteSpace: 'nowrap' }}>
+                                                                (Kamu)
+                                                            </Typography>
+                                                        )}
+                                                        {post.role === 'admin' && <BuildIcon sx={{ fontSize: 14, color: 'primary.main' }} />}
+                                                    </Box>
+                                                    {/* Actions Buttons */}
+                                                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.25 }}>
+                                                        {canDeletePost && (
+                                                            <Tooltip title="Hapus">
+                                                                <IconButton
+                                                                    size="small"
+                                                                    color="error"
+                                                                    onClick={(e) => {
+                                                                        e.stopPropagation();
+                                                                        handleDelete(post.id);
+                                                                    }}
+                                                                    sx={{ mr: 0 }}
+                                                                >
+                                                                    <DeleteOutlineIcon sx={{ fontSize: 18 }} />
+                                                                </IconButton>
+                                                            </Tooltip>
+                                                        )}
+                                                    </Box>
                                                 </Box>
-                                                <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-                                                    <Tooltip title="Buka">
-                                                        <IconButton
-                                                            size="small"
-                                                            onClick={(e) => {
-                                                                e.stopPropagation();
-                                                                navigate(`/unggahan/post/${encodeURIComponent(String(post.id))}`);
-                                                            }}
-                                                            sx={{ mr: 0.25 }}
-                                                        >
-                                                            <LaunchIcon sx={{ fontSize: 18 }} />
-                                                        </IconButton>
-                                                    </Tooltip>
-                                                    {canDeletePost && (
-                                                        <Tooltip title="Hapus">
-                                                            <IconButton
-                                                                size="small"
-                                                                color="error"
-                                                                onClick={(e) => {
-                                                                    e.stopPropagation();
-                                                                    handleDelete(post.id);
-                                                                }}
-                                                                sx={{ mr: 0.5 }}
-                                                            >
-                                                                <DeleteOutlineIcon sx={{ fontSize: 18 }} />
-                                                            </IconButton>
-                                                        </Tooltip>
-                                                    )}
+                                                {/* Time */}
+                                                <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, flexShrink: 0 }}>
                                                     <AccessTimeIcon sx={{ fontSize: 13, color: 'text.disabled' }} />
-                                                    <Typography variant="caption" color="text.disabled">
+                                                    <Typography variant="caption" color="text.disabled" sx={{ whiteSpace: 'nowrap' }}>
                                                         {formatDate(post.created_at)}
                                                     </Typography>
                                                 </Box>

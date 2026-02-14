@@ -21,6 +21,8 @@ import AccessTimeIcon from '@mui/icons-material/AccessTime';
 import AdminPanelSettingsIcon from '@mui/icons-material/AdminPanelSettings';
 import SendIcon from '@mui/icons-material/Send';
 import ForumIcon from '@mui/icons-material/Forum';
+import VerifiedIcon from '@mui/icons-material/VerifiedUser';
+import BuildIcon from '@mui/icons-material/Build';
 import { useAuth } from '../App';
 
 // Fallback data
@@ -261,7 +263,6 @@ export default function FeedPage() {
                     <Typography variant="subtitle1" fontWeight={700}>
                         Informasi Resmi
                     </Typography>
-                    <Chip label="Admin" size="small" color="primary" variant="outlined" sx={{ fontSize: 11, height: 22 }} />
                 </Box>
 
                 {loading ? (
@@ -290,9 +291,7 @@ export default function FeedPage() {
                                         <Typography variant="subtitle2" fontWeight={600} sx={{ mb: 0.75 }}>{post.title}</Typography>
                                         <Typography variant="body2" color="text.secondary" sx={{ lineHeight: 1.7 }}>{post.content}</Typography>
                                         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mt: 2, pt: 1.5, borderTop: '1px solid', borderColor: 'divider' }}>
-                                            <Avatar sx={{ width: 24, height: 24, bgcolor: 'primary.main', fontSize: 11 }}>
-                                                <AdminPanelSettingsIcon sx={{ fontSize: 14 }} />
-                                            </Avatar>
+                                            <VerifiedIcon sx={{ fontSize: 16, color: 'primary.main' }} />
                                             <Typography variant="caption" color="text.secondary" fontWeight={500}>{post.author || 'Admin'}</Typography>
                                         </Box>
                                     </CardContent>
@@ -366,18 +365,31 @@ export default function FeedPage() {
                     </Paper>
                 ) : (
                     <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-                        {userPosts.map((post) => (
+                        {userPosts.map((post) => {
+                            const isAdmin = post.role === 'admin';
+                            return (
                             <Card key={post.id} variant="outlined" sx={{ transition: 'box-shadow 0.2s', '&:hover': { boxShadow: 1 } }}>
                                 <CardContent sx={{ p: 2.5, '&:last-child': { pb: 2.5 } }}>
                                     <Box sx={{ display: 'flex', gap: 2 }}>
-                                        <Avatar sx={{ width: 36, height: 36, bgcolor: 'secondary.main', fontSize: 14, fontWeight: 700, flexShrink: 0 }}>
+                                        <Avatar sx={{ width: 36, height: 36, bgcolor: isAdmin ? 'primary.main' : 'secondary.main', fontSize: 14, fontWeight: 700, flexShrink: 0 }}>
                                             {(post.author_name || post.author_email || 'U').charAt(0).toUpperCase()}
                                         </Avatar>
                                         <Box sx={{ flex: 1, minWidth: 0 }}>
                                             <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 0.5 }}>
-                                                <Typography variant="body2" fontWeight={600}>
-                                                    {post.author_name || post.author_email?.split('@')[0] || 'Pengguna'}
-                                                </Typography>
+                                                <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                                                    <Typography variant="body2" fontWeight={600}>
+                                                        {post.author_name || post.author_email?.split('@')[0] || 'Pengguna'}
+                                                    </Typography>
+                                                    {isAdmin && (
+                                                        <Chip
+                                                            icon={<BuildIcon sx={{ fontSize: 14 }} />}
+                                                            label="Admin"
+                                                            size="small"
+                                                            color="primary"
+                                                            sx={{ height: 20, fontSize: 11 }}
+                                                        />
+                                                    )}
+                                                </Box>
                                                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
                                                     <AccessTimeIcon sx={{ fontSize: 13, color: 'text.disabled' }} />
                                                     <Typography variant="caption" color="text.disabled">
@@ -392,7 +404,8 @@ export default function FeedPage() {
                                     </Box>
                                 </CardContent>
                             </Card>
-                        ))}
+                            );
+                        })}
                     </Box>
                 )}
             </Box>

@@ -28,6 +28,7 @@ import BadgeIcon from '@mui/icons-material/Badge';
 import LockIcon from '@mui/icons-material/Lock';
 import { useColorScheme } from '@mui/joy/styles';
 import { useAuth } from '../App';
+import { compressImage, blobToFile } from '../utils/imageCompress';
 
 export default function ProfilePage() {
     const { user, logout, refreshUser } = useAuth();
@@ -94,12 +95,6 @@ export default function ProfilePage() {
         const file = e.target.files[0];
         if (!file) return;
 
-        // Check file size (max 1MB)
-        if (file.size > 1024 * 1024) {
-            showMessage('Ukuran file maksimal 1MB', 'error');
-            return;
-        }
-
         // Check file type
         if (!file.type.startsWith('image/')) {
             showMessage('File harus berupa gambar', 'error');
@@ -108,8 +103,13 @@ export default function ProfilePage() {
 
         setUploading(true);
         try {
+            // Compress the image
+            showMessage('Mengompres gambar...', 'info');
+            const compressedBlob = await compressImage(file, 150); // Target 150KB
+            const compressedFile = blobToFile(compressedBlob, file.name);
+
             const formData = new FormData();
-            formData.append('photo', file);
+            formData.append('photo', compressedFile);
 
             const res = await fetch('/api/user/photo', {
                 method: 'POST',
@@ -117,9 +117,9 @@ export default function ProfilePage() {
             });
             const data = await res.json();
             if (res.ok) {
-                showMessage('Foto profil berhasil diperbarui!');
-                // Reload to reflect new photo
-                setTimeout(() => window.location.reload(), 1000);
+                showMessage(`Foto profil berhasil diperbarui! (${Math.round(compressedFile.size / 1024)}KB)`);
+                // Refresh user data to reflect new photo without full reload
+                if (refreshUser) await refreshUser();
             } else {
                 showMessage(data.message || 'Gagal upload foto', 'error');
             }
@@ -241,13 +241,12 @@ export default function ProfilePage() {
             <Card variant="outlined" sx={{ mb: 3 }}>
                 <CardContent sx={{ display: 'flex', alignItems: 'center', gap: 3, p: 3 }}>
                     <Box sx={{ position: 'relative' }}>
-                        {user?.picture ? (
-                            <Avatar src={user.picture} sx={{ width: 80, height: 80, fontSize: 28 }} />
-                        ) : (
-                            <Avatar sx={{ width: 80, height: 80, fontSize: 28, bgcolor: 'primary.main' }}>
-                                {user?.email?.charAt(0).toUpperCase() || 'U'}
-                            </Avatar>
-                        )}
+                        <Avatar 
+                            src={user?.picture || undefined} 
+                            sx={{ width: 80, height: 80, fontSize: 28, bgcolor: !user?.picture ? 'primary.main' : undefined }}
+                        >
+                            {user?.email?.charAt(0).toUpperCase() || 'U'}
+                        </Avatar>
                         <IconButton
                             size="small"
                             onClick={() => fileInputRef.current?.click()}

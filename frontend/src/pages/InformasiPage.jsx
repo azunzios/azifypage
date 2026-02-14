@@ -16,6 +16,8 @@ import CampaignIcon from '@mui/icons-material/Campaign';
 import NewReleasesIcon from '@mui/icons-material/NewReleases';
 import AccessTimeIcon from '@mui/icons-material/AccessTime';
 import AdminPanelSettingsIcon from '@mui/icons-material/AdminPanelSettings';
+import VerifiedIcon from '@mui/icons-material/VerifiedUser';
+import BuildIcon from '@mui/icons-material/Build';
 
 const postTypeConfig = {
     info: { color: 'info', icon: <CampaignIcon fontSize="small" />, label: 'Info' },
@@ -170,7 +172,6 @@ export default function InformasiPage() {
                 <Typography variant="subtitle1" fontWeight={700} sx={{ color: 'text.primary' }}>
                     Pengumuman Resmi
                 </Typography>
-                <Chip label="dari Admin" size="small" color="primary" variant="outlined" sx={{ fontSize: 11, height: 22 }} />
             </Box>
 
             {loading ? (
@@ -209,10 +210,7 @@ export default function InformasiPage() {
                                     <Typography variant="subtitle2" fontWeight={600} sx={{ mb: 0.75 }}>{post.title}</Typography>
                                     <Typography variant="body2" color="text.secondary" sx={{ lineHeight: 1.7 }}>{post.content}</Typography>
                                     <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mt: 2, pt: 1.5, borderTop: '1px solid', borderColor: 'divider' }}>
-                                        <Avatar sx={{ width: 24, height: 24, bgcolor: 'primary.main', fontSize: 11 }}>
-                                            <AdminPanelSettingsIcon sx={{ fontSize: 14 }} />
-                                        </Avatar>
-                                        <Typography variant="caption" color="text.secondary" fontWeight={500}>{post.author || 'Admin'}</Typography>
+                                        <VerifiedIcon sx={{ fontSize: 16, color: 'primary.main' }} />
                                     </Box>
                                 </CardContent>
                             </Card>

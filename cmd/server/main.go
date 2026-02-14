@@ -86,6 +86,72 @@ func loadEnv() {
 	}
 }
 
+func syncProfilePicturesOnStartup() {
+	// Wait a bit for database to be ready
+	time.Sleep(1 * time.Second)
+
+	profileDir := filepath.Join(".", "uploads", "profiles")
+	
+	// Check if directory exists
+	if _, err := os.Stat(profileDir); os.IsNotExist(err) {
+		log.Println("ℹ️  Profile directory tidak ditemukan, skipping sync")
+		return
+	}
+
+	// Read all files in the profiles directory
+	entries, err := os.ReadDir(profileDir)
+	if err != nil {
+		log.Printf("Warning: Failed to read profiles directory: %v", err)
+		return
+	}
+
+	synced := 0
+	skipped := 0
+
+	// Process each file
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+
+		filename := entry.Name()
+		// Parse filename format: profile_{user_id}_{random_hex}.{ext}
+		parts := strings.Split(filename, "_")
+		if len(parts) < 3 || parts[0] != "profile" {
+			skipped++
+			continue
+		}
+
+		// Extract user ID
+		userIDStr := parts[1]
+		userID64, err := strconv.ParseUint(userIDStr, 10, 64)
+		if err != nil {
+			skipped++
+			continue
+		}
+
+		userID := uint(userID64)
+
+		// Check if user exists and has no picture
+		var user database.User
+		if err := database.DB.First(&user, userID).Error; err != nil {
+			continue
+		}
+
+		// Only update if user doesn't have a picture URL
+		if user.Picture == "" {
+			pictureURL := "/uploads/profiles/" + filename
+			if err := database.DB.Model(&database.User{}).Where("id = ?", userID).Update("picture", pictureURL).Error; err == nil {
+				synced++
+			}
+		}
+	}
+
+	if synced > 0 {
+		log.Printf("✅ Profile pictures sync: %d gambar diperbarui dari disk", synced)
+	}
+}
+
 func main() {
 	loadEnv()
 	telegramBotToken = strings.TrimSpace(os.Getenv("TELEGRAM_BOT_TOKEN"))
@@ -124,6 +190,9 @@ func main() {
 	if err := database.SeedDefaultPosts(); err != nil {
 		log.Printf("Warning: Failed to seed posts: %v", err)
 	}
+
+	// Sync existing profile pictures from disk to database
+	go syncProfilePicturesOnStartup()
 
 	// Initialize Real-Debrid client
 	rdAPIKey := strings.TrimSpace(os.Getenv("REALDEBRID_API_KEY"))
@@ -198,6 +267,7 @@ func main() {
 	http.HandleFunc("/api/admin/hosts", auth.RequireAdmin(handleAdminHosts))
 	http.HandleFunc("/api/admin/banners", auth.RequireAdmin(handleAdminBanners))
 	http.HandleFunc("/api/admin/banners/upload-image", auth.RequireAdmin(handleAdminBannerImageUpload))
+	http.HandleFunc("/api/admin/profile-pictures/sync", auth.RequireAdmin(handleSyncProfilePictures))
 	http.HandleFunc("/api/admin/posts/official", auth.RequireAdmin(handleAdminOfficialPosts))
 
 	// Feed Endpoints
@@ -208,7 +278,7 @@ func main() {
 
 	// Static files (React SPA)
 	fs := http.FileServer(http.Dir("./frontend/dist"))
-	http.Handle("/uploads/", http.StripPrefix("/uploads/", http.FileServer(http.Dir("./uploads"))))
+	http.Handle("/uploads/", http.StripPrefix("/uploads/", handleUploadsDir(http.Dir("./uploads"))))
 
 	// SPA Handler
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -886,6 +956,7 @@ func handleGetUser(w http.ResponseWriter, r *http.Request) {
 	response := map[string]any{
 		"id":                   user.ID,
 		"email":                user.Email,
+		"name":                 firstNonEmpty(user.Name, session.Name, user.Email),
 		"picture":              firstNonEmpty(user.Picture, session.Picture),
 		"email_verified":       user.EmailVerified,
 		"balance":              user.Balance,
@@ -961,6 +1032,15 @@ func handleUserPhotoUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Delete old profile picture files for this user
+	oldEntries, _ := os.ReadDir(uploadDir)
+	prefix := fmt.Sprintf("profile_%d_", session.UserID)
+	for _, e := range oldEntries {
+		if !e.IsDir() && strings.HasPrefix(e.Name(), prefix) {
+			os.Remove(filepath.Join(uploadDir, e.Name()))
+		}
+	}
+
 	randomPart := make([]byte, 8)
 	rand.Read(randomPart)
 	filename := fmt.Sprintf("profile_%d_%s%s", session.UserID, hex.EncodeToString(randomPart), ext)
@@ -992,6 +1072,10 @@ func handleUserPhotoUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Also update picture in existing posts and replies so they reflect the new photo
+	database.DB.Model(&database.UserPost{}).Where("user_id = ?", session.UserID).Update("picture", urlPath)
+	database.DB.Model(&database.UserPostReply{}).Where("user_id = ?", session.UserID).Update("picture", urlPath)
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{
 		"success":    true,
@@ -999,6 +1083,114 @@ func handleUserPhotoUpload(w http.ResponseWriter, r *http.Request) {
 		"picture":    urlPath,
 		"size_bytes": written,
 	})
+}
+
+func handleUploadsDir(fs http.FileSystem) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Set cache headers for static files
+		w.Header().Set("Cache-Control", "public, max-age=86400") // 1 day cache
+		http.FileServer(fs).ServeHTTP(w, r)
+	})
+}
+
+func handleSyncProfilePictures(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	profileDir := filepath.Join(".", "uploads", "profiles")
+	
+	// Check if directory exists
+	if _, err := os.Stat(profileDir); os.IsNotExist(err) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"success": false,
+			"message": "Profile directory tidak ditemukan",
+			"synced": 0,
+		})
+		return
+	}
+
+	// Read all files in the profiles directory
+	entries, err := os.ReadDir(profileDir)
+	if err != nil {
+		http.Error(w, "Failed to read profiles directory", http.StatusInternalServerError)
+		return
+	}
+
+	synced := 0
+	skipped := 0
+	failed := 0
+	var syncErrors []string
+
+	// Process each file
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+
+		filename := entry.Name()
+		// Parse filename format: profile_{user_id}_{random_hex}.{ext}
+		parts := strings.Split(filename, "_")
+		if len(parts) < 3 || parts[0] != "profile" {
+			skipped++
+			continue
+		}
+
+		// Extract user ID
+		userIDStr := parts[1]
+		userID64, err := strconv.ParseUint(userIDStr, 10, 64)
+		if err != nil {
+			skipped++
+			continue
+		}
+
+		userID := uint(userID64)
+
+		// Check if user exists
+		var user database.User
+		if err := database.DB.First(&user, userID).Error; err != nil {
+			if err.Error() == "record not found" {
+				skipped++
+				continue
+			}
+			failed++
+			syncErrors = append(syncErrors, fmt.Sprintf("Error checking user %d: %v", userID, err))
+			continue
+		}
+
+		// Check if user already has a picture URL that matches this file
+		if user.Picture != "" && strings.Contains(user.Picture, filename) {
+			skipped++
+			continue
+		}
+
+		// Update user picture with the file URL
+		pictureURL := "/uploads/profiles/" + filename
+		if err := database.DB.Model(&database.User{}).Where("id = ?", userID).Update("picture", pictureURL).Error; err != nil {
+			failed++
+			syncErrors = append(syncErrors, fmt.Sprintf("Error updating user %d: %v", userID, err))
+			continue
+		}
+
+		synced++
+	}
+
+	response := map[string]any{
+		"success": true,
+		"message": fmt.Sprintf("Sinkronisasi selesai. Diperbarui: %d, Dilewati: %d, Gagal: %d", synced, skipped, failed),
+		"synced": synced,
+		"skipped": skipped,
+		"failed": failed,
+	}
+
+	if len(syncErrors) > 0 {
+		response["errors"] = syncErrors
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
 }
 
 func handleUserNameUpdate(w http.ResponseWriter, r *http.Request) {
@@ -4656,6 +4848,8 @@ func handleUserPosts(w http.ResponseWriter, r *http.Request) {
 			Content:     req.Content,
 			AuthorName:  session.Name,
 			AuthorEmail: user.Email,
+			Picture:     user.Picture,
+			Role:        session.Role,
 		}
 		if post.AuthorName == "" {
 			post.AuthorName = strings.Split(user.Email, "@")[0]
@@ -4809,6 +5003,8 @@ func handleUserPostReplies(w http.ResponseWriter, r *http.Request) {
 			Content:     req.Content,
 			AuthorName:  session.Name,
 			AuthorEmail: user.Email,
+			Picture:     user.Picture,
+			Role:        session.Role,
 		}
 		if reply.AuthorName == "" {
 			reply.AuthorName = strings.Split(user.Email, "@")[0]

@@ -108,6 +108,14 @@ export default function TopupNewPage() {
         return PAYMENT_OPTIONS.find((p) => p.value === method)?.label || String(method);
     }, [activePayment]);
 
+    const getAccountColor = (account) => {
+        return account === 'SEGERA' ? 'warning' : 'default';
+    };
+
+    const getAccountTextColor = (account) => {
+        return account === 'SEGERA' ? '#ff9800' : 'inherit';
+    };
+
     return (
         <Box sx={{ maxWidth: 720, mx: 'auto' }}>
             <Paper variant="outlined" sx={{ p: 2.5 }}>
@@ -131,7 +139,7 @@ export default function TopupNewPage() {
                         {PAYMENT_OPTIONS.map((opt) => (
                             <MenuItem key={opt.value} value={opt.value}>
                                 <Box sx={{ display: 'inline-flex', alignItems: 'center', gap: 1 }}>
-                                    <Box component="img" src={opt.logo} alt={opt.label} sx={{ width: 24, height: 20, objectFit: 'contain' }} />
+                                    <Box component="img" src={opt.logo} alt={opt.label} sx={{ width: 32, height: 16, objectFit: 'contain' }} />
                                     {opt.label}
                                 </Box>
                             </MenuItem>
@@ -150,12 +158,16 @@ export default function TopupNewPage() {
                 </Box>
 
                 <Alert severity="info" sx={{ mt: 2 }}>
-                    <Box sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.75 }}>
-                        <Box component="img" src={selectedPayment.logo} alt={selectedPayment.label} sx={{ width: 24, height: 20, objectFit: 'contain' }} />
-                        <span>Tujuan pembayaran untuk <strong>{selectedPayment.label}</strong>: <strong>{selectedPayment.account}</strong></span>
+                    <Box sx={{ display: 'flex', flexDirection: { xs: 'column', sm: 'row' }, alignItems: { xs: 'flex-start', sm: 'center' }, gap: { xs: 1, sm: 0.75 } }}>
+                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, flexShrink: 0 }}>
+                            <Box component="img" src={selectedPayment.logo} alt={selectedPayment.label} sx={{ width: 32, height: 16, objectFit: 'contain' }} />
+                            <span>Tujuan pembayaran untuk <strong>{selectedPayment.label}</strong>:</span>
+                        </Box>
+                        <Box component="span" sx={{ fontWeight: 'bold', color: getAccountTextColor(selectedPayment.account) }}>{selectedPayment.account}</Box>
                     </Box>
-                    <br />
-                    Nama penerima: <strong>Narangga Khoirul Utama</strong>
+                    <Box sx={{ mt: 1 }}>
+                        Nama penerima: <strong>Narangga Khoirul Utama</strong>
+                    </Box>
                 </Alert>
 
                 <Box sx={{ display: 'flex', justifyContent: 'space-between', gap: 1.5, mt: 2.5, flexWrap: 'wrap' }}>
@@ -175,13 +187,20 @@ export default function TopupNewPage() {
                         </Typography>
 
                         <Alert severity="info">
-                            Metode: <strong>{selectedPayment.label}</strong>
-                            <br />
-                            Tujuan: <strong>{selectedPayment.account}</strong>
-                            <br />
-                            Nominal: <strong>Rp {Number(nominal || 0).toLocaleString('id-ID')}</strong>
-                            <br />
-                            Atas nama: <strong>Narangga Khoirul Utama</strong>
+                            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.75 }}>
+                                <Box>
+                                    Metode: <strong>{selectedPayment.label}</strong>
+                                </Box>
+                                <Box>
+                                    Tujuan: <Box component="span" sx={{ fontWeight: 'bold', color: getAccountTextColor(selectedPayment.account) }}>{selectedPayment.account}</Box>
+                                </Box>
+                                <Box>
+                                    Nominal: <strong>Rp {Number(nominal || 0).toLocaleString('id-ID')}</strong>
+                                </Box>
+                                <Box>
+                                    Atas nama: <strong>Narangga Khoirul Utama</strong>
+                                </Box>
+                            </Box>
                         </Alert>
                     </DialogContent>
                     <DialogActions sx={{ px: 3, pb: 2.5 }}>
@@ -212,17 +231,22 @@ export default function TopupNewPage() {
                         </Typography>
 
                         <Alert severity="warning">
-                            {activePayment?.serial ? (
-                                <>
-                                    Kode: <strong>{activePayment.serial}</strong>
-                                    <br />
-                                </>
-                            ) : null}
-                            Metode: <strong>{activePaymentLabel || '-'}</strong>
-                            <br />
-                            Tujuan: <strong>{activePayment?.payment_account || '-'}</strong>
-                            <br />
-                            Nominal: <strong>Rp {Number(activePayment?.amount || 0).toLocaleString('id-ID')}</strong>
+                            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.75 }}>
+                                {activePayment?.serial ? (
+                                    <Box>
+                                        Kode: <strong>{activePayment.serial}</strong>
+                                    </Box>
+                                ) : null}
+                                <Box>
+                                    Metode: <strong>{activePaymentLabel || '-'}</strong>
+                                </Box>
+                                <Box>
+                                    Tujuan: <Box component="span" sx={{ fontWeight: 'bold', color: getAccountTextColor(activePayment?.payment_account || '') }}>{activePayment?.payment_account || '-'}</Box>
+                                </Box>
+                                <Box>
+                                    Nominal: <strong>Rp {Number(activePayment?.amount || 0).toLocaleString('id-ID')}</strong>
+                                </Box>
+                            </Box>
                         </Alert>
                     </DialogContent>
                     <DialogActions sx={{ px: 3, pb: 2.5 }}>
