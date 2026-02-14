@@ -3,6 +3,7 @@ package database
 import (
 	"fmt"
 	"log"
+	"os"
 
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
@@ -22,12 +23,33 @@ type Config struct {
 
 // DefaultConfig returns the default database configuration
 func DefaultConfig() Config {
+	host := os.Getenv("DB_HOST")
+	if host == "" {
+		host = "localhost"
+	}
+
+	port := os.Getenv("DB_PORT")
+	if port == "" {
+		port = "3306"
+	}
+
+	user := os.Getenv("DB_USER")
+	if user == "" {
+		user = "root"
+	}
+
+	password := os.Getenv("DB_PASSWORD")
+	dbName := os.Getenv("DB_NAME")
+	if dbName == "" {
+		dbName = "azify_db"
+	}
+
 	return Config{
-		Host:     "localhost",
-		Port:     "3306",
-		User:     "root",
-		Password: "",
-		DBName:   "azify_db",
+		Host:     host,
+		Port:     port,
+		User:     user,
+		Password: password,
+		DBName:   dbName,
 	}
 }
 
