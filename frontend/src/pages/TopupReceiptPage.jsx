@@ -14,10 +14,10 @@ import DialogContent from '@mui/material/DialogContent';
 import DialogActions from '@mui/material/DialogActions';
 
 const PAYMENT_OPTIONS = [
-    { value: 'gopay', label: 'GoPay', account: '085778135021' },
-    { value: 'bri', label: 'BRI', account: '162901006178537' },
-    { value: 'bank_jago', label: 'Bank Jago', account: '103325280390' },
-    { value: 'crypto_usdt', label: 'Crypto (USDT)', account: 'SEGERA' },
+    { value: 'gopay', label: 'GoPay', account: '085778135021', logo: '/logo-pembayaran/gopay.png' },
+    { value: 'bri', label: 'BRI', account: '162901006178537', logo: '/logo-pembayaran/bri.svg' },
+    { value: 'bank_jago', label: 'Bank Jago', account: '103325280390', logo: '/logo-pembayaran/bank_jago.png' },
+    { value: 'crypto_usdt', label: 'Crypto (USDT)', account: 'SEGERA', logo: '/logo-pembayaran/usdt.png' },
 ];
 
 function useQuery() {
@@ -224,9 +224,12 @@ export default function TopupReceiptPage() {
                             <Typography variant="caption" color="text.secondary">
                                 Ke
                             </Typography>
-                            <Typography variant="body1" fontWeight={800}>
-                                {selected.label} — {selected.account}
-                            </Typography>
+                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                                <Box component="img" src={selected.logo} alt={selected.label} sx={{ width: 24, height: 20, objectFit: 'contain' }} />
+                                <Typography variant="body1" fontWeight={800}>
+                                    {selected.label} — {selected.account}
+                                </Typography>
+                            </Box>
                         </Box>
 
                         <Box>

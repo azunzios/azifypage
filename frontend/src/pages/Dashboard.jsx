@@ -7,6 +7,7 @@ export default function Dashboard() {
     const [folderHistory, setFolderHistory] = useState([{ id: '', name: 'My Files' }]); // Navigation history
     const [historyIndex, setHistoryIndex] = useState(0); // Current position in history
     const [breadcrumb, setBreadcrumb] = useState([{ id: '', name: 'My Files' }]); // Breadcrumb path
+    const [downloadingFolder, setDownloadingFolder] = useState({ id: '', done: 0, total: 0 });
 
     // Fetch files for a given folder
     const fetchFiles = useCallback((folderId = '') => {
@@ -102,15 +103,109 @@ export default function Dashboard() {
     };
 
     // Handle getting download link
-    const handleGetLink = async (fileId) => {
+    const handleGetLink = async (file) => {
         try {
-            const res = await fetch(`/api/file/link?file_id=${fileId}`);
-            const data = await res.json();
-            if (data.link) {
-                window.open(data.link, '_blank');
-            }
+            const fileId = file?.id;
+            const fileName = file?.name || '';
+            window.open(`/api/file/download?file_id=${encodeURIComponent(fileId)}&file_name=${encodeURIComponent(fileName)}`, '_blank');
         } catch (err) {
             console.error('Failed to get download link:', err);
+        }
+    };
+
+    const getOrCreateDir = async (rootHandle, folderPath) => {
+        if (!folderPath || folderPath === '.') return rootHandle;
+        const parts = folderPath.split('/').filter(Boolean);
+        let current = rootHandle;
+        for (const part of parts) {
+            current = await current.getDirectoryHandle(part, { create: true });
+        }
+        return current;
+    };
+
+    const downloadFileToDirectory = async (rootHandle, item) => {
+        const normalized = (item.relative_path || item.name || '').replace(/^\/+/, '');
+        const parts = normalized.split('/').filter(Boolean);
+        const fileName = parts.pop() || item.name || item.file_id;
+        const folderPath = parts.join('/');
+        const dirHandle = await getOrCreateDir(rootHandle, folderPath);
+        const fileHandle = await dirHandle.getFileHandle(fileName, { create: true });
+
+        const res = await fetch(item.web_content_link);
+        if (!res.ok) {
+            throw new Error(`HTTP ${res.status}`);
+        }
+
+        const writable = await fileHandle.createWritable();
+        if (res.body && writable && typeof res.body.pipeTo === 'function') {
+            await res.body.pipeTo(writable);
+            return;
+        }
+
+        const blob = await res.blob();
+        await writable.write(blob);
+        await writable.close();
+    };
+
+    const handleDownloadFolder = async (file) => {
+        const isDesktop = !/Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+        const isChromeOrEdge = /Chrome|Edg/i.test(navigator.userAgent);
+        if (!window.showDirectoryPicker || !isDesktop || !isChromeOrEdge) {
+            alert('Download folder langsung hanya didukung di Chrome/Edge desktop (Windows/macOS/Linux).');
+            return;
+        }
+
+        try {
+            const dirHandle = await window.showDirectoryPicker({ mode: 'readwrite' });
+            const res = await fetch(`/api/folder/manifest?folder_id=${file.id}&folder_name=${encodeURIComponent(file.name)}&format=json`);
+            if (!res.ok) {
+                const text = await res.text();
+                throw new Error(text || `HTTP ${res.status}`);
+            }
+
+            const data = await res.json();
+            const items = Array.isArray(data?.items) ? data.items.filter((item) => item?.web_content_link) : [];
+            if (!items.length) {
+                alert('Tidak ada file yang bisa diunduh pada folder ini.');
+                return;
+            }
+
+            setDownloadingFolder({ id: file.id, done: 0, total: items.length });
+
+            const concurrency = 3;
+            const queue = [...items];
+            const failed = [];
+
+            const worker = async () => {
+                while (queue.length > 0) {
+                    const item = queue.shift();
+                    if (!item) continue;
+                    try {
+                        await downloadFileToDirectory(dirHandle, item);
+                    } catch (err) {
+                        failed.push({ name: item.relative_path || item.name, error: err?.message || 'unknown error' });
+                    } finally {
+                        setDownloadingFolder((prev) => {
+                            if (prev.id !== file.id) return prev;
+                            return { ...prev, done: prev.done + 1 };
+                        });
+                    }
+                }
+            };
+
+            await Promise.all(Array.from({ length: concurrency }, () => worker()));
+
+            if (failed.length > 0) {
+                alert(`Download selesai dengan ${failed.length} gagal. Klik lagi untuk retry.`);
+            } else {
+                alert('Download folder selesai.');
+            }
+        } catch (err) {
+            if (err?.name === 'AbortError') return;
+            console.error('Failed to download folder directly:', err);
+            alert(`Gagal download langsung: ${err?.message || 'unknown error'}`);
+        } finally {
+            setDownloadingFolder({ id: '', done: 0, total: 0 });
         }
     };
 
@@ -274,15 +369,18 @@ export default function Dashboard() {
                                                 </button>
                                                 <span className="text-neutral-600">|</span>
                                                 <button
-                                                    onClick={() => window.location.href = `/api/folder/download?folder_id=${file.id}`}
+                                                    onClick={() => handleDownloadFolder(file)}
+                                                    disabled={downloadingFolder.id === file.id}
                                                     className="text-purple-400 hover:text-purple-300 hover:underline bg-transparent border-0 p-0 text-sm"
                                                 >
-                                                    Download All
+                                                    {downloadingFolder.id === file.id
+                                                        ? `Downloading ${downloadingFolder.done}/${downloadingFolder.total}`
+                                                        : 'Download All'}
                                                 </button>
                                             </div>
                                         ) : (
                                             <button
-                                                onClick={() => handleGetLink(file.id)}
+                                                onClick={() => handleGetLink(file)}
                                                 className="text-green-400 hover:text-green-300 hover:underline bg-transparent border-0 p-0 text-sm"
                                             >
                                                 Get Link

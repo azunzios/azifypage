@@ -15,10 +15,10 @@ import DialogActions from '@mui/material/DialogActions';
 import CircularProgress from '@mui/material/CircularProgress';
 
 const PAYMENT_OPTIONS = [
-    { value: 'gopay', label: 'GoPay', account: '085778135021' },
-    { value: 'bri', label: 'BRI', account: '162901006178537' },
-    { value: 'bank_jago', label: 'Bank Jago', account: '103325280390' },
-    { value: 'crypto_usdt', label: 'Crypto (USDT)', account: 'SEGERA' },
+    { value: 'gopay', label: 'GoPay', account: '085778135021', logo: '/logo-pembayaran/gopay.png' },
+    { value: 'bri', label: 'BRI', account: '162901006178537', logo: '/logo-pembayaran/bri.svg' },
+    { value: 'bank_jago', label: 'Bank Jago', account: '103325280390', logo: '/logo-pembayaran/bank_jago.png' },
+    { value: 'crypto_usdt', label: 'Crypto (USDT)', account: 'SEGERA', logo: '/logo-pembayaran/usdt.png' },
 ];
 
 export default function TopupNewPage() {
@@ -130,7 +130,10 @@ export default function TopupNewPage() {
                     >
                         {PAYMENT_OPTIONS.map((opt) => (
                             <MenuItem key={opt.value} value={opt.value}>
-                                {opt.label}
+                                <Box sx={{ display: 'inline-flex', alignItems: 'center', gap: 1 }}>
+                                    <Box component="img" src={opt.logo} alt={opt.label} sx={{ width: 24, height: 20, objectFit: 'contain' }} />
+                                    {opt.label}
+                                </Box>
                             </MenuItem>
                         ))}
                     </TextField>
@@ -147,7 +150,10 @@ export default function TopupNewPage() {
                 </Box>
 
                 <Alert severity="info" sx={{ mt: 2 }}>
-                    Tujuan pembayaran untuk <strong>{selectedPayment.label}</strong>: <strong>{selectedPayment.account}</strong>
+                    <Box sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.75 }}>
+                        <Box component="img" src={selectedPayment.logo} alt={selectedPayment.label} sx={{ width: 24, height: 20, objectFit: 'contain' }} />
+                        <span>Tujuan pembayaran untuk <strong>{selectedPayment.label}</strong>: <strong>{selectedPayment.account}</strong></span>
+                    </Box>
                     <br />
                     Nama penerima: <strong>Narangga Khoirul Utama</strong>
                 </Alert>

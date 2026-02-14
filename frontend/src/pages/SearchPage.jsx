@@ -92,7 +92,7 @@ export default function SearchPage() {
           <Paper variant="outlined" sx={{ p: 2 }}>
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1.5 }}>
               <ForumIcon color="primary" />
-              <Typography variant="subtitle1" fontWeight={700}>Unggahan Pengguna</Typography>
+              <Typography variant="subtitle1" fontWeight={700}>Diskusi Pengguna</Typography>
               <Chip size="small" label={filteredUser.length} />
             </Box>
             {filteredUser.length === 0 ? (

@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/url"
 	"net/http"
+	"path"
 	"strings"
 	"time"
 )
@@ -52,6 +54,13 @@ type FileListResponse struct {
 	Kind          string `json:"kind"`
 	NextPageToken string `json:"next_page_token"`
 	Files         []File `json:"files"`
+}
+
+// ManifestFile stores file metadata with relative path info for folder export/download manifests.
+type ManifestFile struct {
+	File
+	RelativePath string `json:"relative_path"`
+	FolderPath   string `json:"folder_path"`
 }
 
 func NewClient(refreshToken string, accessToken string) *Client {
@@ -320,6 +329,41 @@ func (c *Client) DeleteTasks(taskIDs []string) error {
 	return nil
 }
 
+// DeleteFile deletes (or trashes) a file/folder by ID
+func (c *Client) DeleteFile(fileID string) error {
+	action := "POST:/drive/v1/files:batchDelete"
+	captchaToken, err := c.CaptchaInit(action, nil)
+	if err != nil {
+		return fmt.Errorf("failed to init captcha for delete: %v", err)
+	}
+
+	url := "https://api-drive.mypikpak.com/drive/v1/files:batchDelete"
+	payload := map[string]any{
+		"ids": []string{fileID},
+	}
+	jsonData, _ := json.Marshal(payload)
+	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonData))
+	if err != nil {
+		return err
+	}
+	for k, v := range c.getHeaders(captchaToken) {
+		req.Header.Set(k, v)
+	}
+
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode != 200 && resp.StatusCode != 204 {
+		return fmt.Errorf("batch delete failed: %d %s", resp.StatusCode, string(body))
+	}
+
+	return nil
+}
+
 // Login performs the full login flow with username and password
 func (c *Client) Login(username, password string) error {
 	// Mimic Python: device_id = md5(username + password)
@@ -465,23 +509,27 @@ func (c *Client) RefreshAccessToken() error {
 	return nil
 }
 
-// ListFiles lists files in a specific folder (parentID)
-func (c *Client) ListFiles(parentID string) ([]File, error) {
+func (c *Client) listFilesPage(parentID, pageToken string, allowRefresh bool) (FileListResponse, error) {
+	var emptyResp FileListResponse
+
 	if c.AccessToken == "" {
 		if err := c.RefreshAccessToken(); err != nil {
-			return nil, err
+			return emptyResp, err
 		}
 	}
 
 	// Match filters from Python client: {"trashed":{"eq":false},"phase":{"eq":"PHASE_TYPE_COMPLETE"}}
-	url := DriveURL + "?filters=%7B%22trashed%22%3A%7B%22eq%22%3Afalse%7D%2C%22phase%22%3A%7B%22eq%22%3A%22PHASE_TYPE_COMPLETE%22%7D%7D"
+	reqURL := DriveURL + "?filters=%7B%22trashed%22%3A%7B%22eq%22%3Afalse%7D%2C%22phase%22%3A%7B%22eq%22%3A%22PHASE_TYPE_COMPLETE%22%7D%7D"
 	if parentID != "" {
-		url += "&parent_id=" + parentID
+		reqURL += "&parent_id=" + url.QueryEscape(parentID)
+	}
+	if pageToken != "" {
+		reqURL += "&page_token=" + url.QueryEscape(pageToken)
 	}
 
-	req, err := http.NewRequest("GET", url, nil)
+	req, err := http.NewRequest("GET", reqURL, nil)
 	if err != nil {
-		return nil, err
+		return emptyResp, err
 	}
 
 	for k, v := range c.getHeaders("") {
@@ -490,41 +538,69 @@ func (c *Client) ListFiles(parentID string) ([]File, error) {
 
 	resp, err := c.HTTPClient.Do(req)
 	if err != nil {
-		return nil, err
+		return emptyResp, err
 	}
 	defer resp.Body.Close()
 
 	body, _ := io.ReadAll(resp.Body)
-	// Debug log to see what we got
-	fmt.Printf("ListFiles Response Status: %d\n", resp.StatusCode)
-	fmt.Printf("ListFiles Body: %s\n", string(body)) // ENABLED DEBUG LOG
 
 	if resp.StatusCode != 200 {
-		// Try to refresh token once if 401
-		if resp.StatusCode == 401 {
+		if resp.StatusCode == 401 && allowRefresh {
 			if err := c.RefreshAccessToken(); err == nil {
-				// Retry
-				// Recursion is dangerous if not careful, but okay for one level deep usually.
-				// Better to just return error and let caller handle or simple retry logic here.
-				return nil, fmt.Errorf("unauthorized (token expired?), please retry")
+				return c.listFilesPage(parentID, pageToken, false)
 			}
 		}
-		return nil, fmt.Errorf("list files failed: status %d, body: %s", resp.StatusCode, string(body))
+		return emptyResp, fmt.Errorf("list files failed: status %d, body: %s", resp.StatusCode, string(body))
 	}
 
 	var listResp FileListResponse
 	if err := json.Unmarshal(body, &listResp); err != nil {
-		return nil, err
+		return emptyResp, err
 	}
 
-	return listResp.Files, nil
+	return listResp, nil
+}
+
+// ListFilesPage lists files in one page for a specific parent folder.
+func (c *Client) ListFilesPage(parentID, pageToken string) ([]File, string, error) {
+	listResp, err := c.listFilesPage(parentID, pageToken, true)
+	if err != nil {
+		return nil, "", err
+	}
+	return listResp.Files, listResp.NextPageToken, nil
+}
+
+// ListAllFiles lists all files in a specific folder (handles pagination via next_page_token).
+func (c *Client) ListAllFiles(parentID string) ([]File, error) {
+	var allFiles []File
+	pageToken := ""
+
+	for {
+		files, nextPageToken, err := c.ListFilesPage(parentID, pageToken)
+		if err != nil {
+			return nil, err
+		}
+
+		allFiles = append(allFiles, files...)
+		if nextPageToken == "" {
+			break
+		}
+		pageToken = nextPageToken
+	}
+
+	return allFiles, nil
+}
+
+// ListFiles lists all files in a specific folder (backward compatible helper).
+func (c *Client) ListFiles(parentID string) ([]File, error) {
+	return c.ListAllFiles(parentID)
 }
 
 // WalkFolder recursively lists all files in a folder and returns plain download links
 func (c *Client) WalkFolder(parentID string) ([]string, error) {
 	var links []string
 
-	files, err := c.ListFiles(parentID)
+	files, err := c.ListAllFiles(parentID)
 	if err != nil {
 		return nil, err
 	}
@@ -563,7 +639,7 @@ func (c *Client) WalkFolder(parentID string) ([]string, error) {
 func (c *Client) WalkFolderFiles(parentID string) ([]File, error) {
 	var allFiles []File
 
-	files, err := c.ListFiles(parentID)
+	files, err := c.ListAllFiles(parentID)
 	if err != nil {
 		return nil, err
 	}
@@ -586,6 +662,60 @@ func (c *Client) WalkFolderFiles(parentID string) ([]File, error) {
 				allFiles = append(allFiles, f)
 			}
 		}
+	}
+
+	return allFiles, nil
+}
+
+// WalkFolderManifest recursively lists all files in a folder and returns metadata with relative paths.
+func (c *Client) WalkFolderManifest(parentID string) ([]ManifestFile, error) {
+	var allFiles []ManifestFile
+
+	var walk func(currentID, currentPath string) error
+	walk = func(currentID, currentPath string) error {
+		files, err := c.ListAllFiles(currentID)
+		if err != nil {
+			return err
+		}
+
+		for _, f := range files {
+			if f.Kind == "drive#folder" {
+				nextPath := f.Name
+				if currentPath != "" {
+					nextPath = path.Join(currentPath, f.Name)
+				}
+				if err := walk(f.ID, nextPath); err != nil {
+					return err
+				}
+				continue
+			}
+
+			if f.WebContentLink == "" {
+				l, _ := c.GetDownloadUrl(f.ID)
+				f.WebContentLink = l
+			}
+			if f.WebContentLink == "" {
+				continue
+			}
+
+			relPath := f.Name
+			folderPath := currentPath
+			if currentPath != "" {
+				relPath = path.Join(currentPath, f.Name)
+			}
+
+			allFiles = append(allFiles, ManifestFile{
+				File:         f,
+				RelativePath: relPath,
+				FolderPath:   folderPath,
+			})
+		}
+
+		return nil
+	}
+
+	if err := walk(parentID, ""); err != nil {
+		return nil, err
 	}
 
 	return allFiles, nil

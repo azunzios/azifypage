@@ -22,6 +22,7 @@ import UnggahanPage from './pages/UnggahanPage';
 import UnggahanPostPage from './pages/UnggahanPostPage';
 import SearchPage from './pages/SearchPage';
 import AvailableHostsPage from './pages/AvailableHostsPage';
+import FolderDownloadPage from './pages/FolderDownloadPage';
 
 // Auth Context
 const AuthContext = createContext(null);
@@ -81,6 +82,14 @@ function AppContent() {
         element={
           <ProtectedRoute>
             <TasksPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/download/folder"
+        element={
+          <ProtectedRoute>
+            <FolderDownloadPage />
           </ProtectedRoute>
         }
       />

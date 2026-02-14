@@ -15,6 +15,8 @@ import DialogContent from '@mui/material/DialogContent';
 import DialogActions from '@mui/material/DialogActions';
 import Button from '@mui/material/Button';
 import Divider from '@mui/material/Divider';
+import Tabs from '@mui/material/Tabs';
+import Tab from '@mui/material/Tab';
 import Tooltip from '@mui/material/Tooltip';
 import Fab from '@mui/material/Fab';
 import ChevronLeftIcon from '@mui/icons-material/ChevronLeft';
@@ -27,8 +29,10 @@ import FolderIcon from '@mui/icons-material/Folder';
 import DownloadIcon from '@mui/icons-material/Download';
 import AccessTimeIcon from '@mui/icons-material/AccessTime';
 import DownloadingIcon from '@mui/icons-material/Downloading';
+import AddIcon from '@mui/icons-material/Add';
 import PlayArrowIcon from '@mui/icons-material/PlayArrow';
 import AttachMoneyIcon from '@mui/icons-material/AttachMoney';
+import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
 
 export default function TasksPage() {
     const [files, setFiles] = useState([]);
@@ -38,7 +42,10 @@ export default function TasksPage() {
     const [premiumPage, setPremiumPage] = useState(1);
     const [premiumTotalPages, setPremiumTotalPages] = useState(1);
     const [premiumTotal, setPremiumTotal] = useState(0);
+    const [deletingPremiumId, setDeletingPremiumId] = useState(null);
+    const [deletePremiumTarget, setDeletePremiumTarget] = useState(null);
     const [showInfo, setShowInfo] = useState(false);
+    const [downloadTab, setDownloadTab] = useState(0);
     const navigate = useNavigate();
 
     // Navigation state
@@ -66,7 +73,7 @@ export default function TasksPage() {
         loadFiles(currentFolderId);
     }, [currentFolderId, loadFiles]);
 
-    useEffect(() => {
+    const loadPremiumHistory = useCallback(() => {
         setLoadingPremium(true);
         fetch(`/api/premium/request?page=${premiumPage}&page_size=25`)
             .then((res) => res.json())
@@ -87,6 +94,9 @@ export default function TasksPage() {
                 setPremiumHistory(items);
                 setPremiumTotal(Number(data?.total || 0));
                 setPremiumTotalPages(Math.max(1, Number(data?.total_pages || 1)));
+                if (Number(data?.page || 0) > 0 && Number(data.page) !== premiumPage) {
+                    setPremiumPage(Number(data.page));
+                }
             })
             .catch(() => {
                 setPremiumHistory([]);
@@ -95,6 +105,36 @@ export default function TasksPage() {
             })
             .finally(() => setLoadingPremium(false));
     }, [premiumPage]);
+
+    useEffect(() => {
+        loadPremiumHistory();
+    }, [loadPremiumHistory]);
+
+    const handleDeletePremiumItem = async () => {
+        if (!deletePremiumTarget?.id) return;
+        const id = deletePremiumTarget.id;
+        setDeletingPremiumId(id);
+        try {
+            const res = await fetch(`/api/premium/request?id=${id}`, { method: 'DELETE' });
+            if (!res.ok) {
+                let message = 'Gagal menghapus item riwayat.';
+                try {
+                    const data = await res.json();
+                    message = data?.message || message;
+                } catch {
+                    // ignore
+                }
+                alert(message);
+                return;
+            }
+            setDeletePremiumTarget(null);
+            loadPremiumHistory();
+        } catch (e) {
+            alert('Error: ' + e.message);
+        } finally {
+            setDeletingPremiumId(null);
+        }
+    };
 
     const formatDateTime = (dateStr) => {
         if (!dateStr) return '-';
@@ -169,180 +209,207 @@ export default function TasksPage() {
 
     const refresh = () => loadFiles(currentFolderId);
 
+    const startFolderDownload = (file) => {
+        navigate(`/download/folder?folder_id=${encodeURIComponent(file.id)}&folder_name=${encodeURIComponent(file.name || '')}`);
+    };
+
     const canGoBack = historyIndex > 0;
     const canGoForward = historyIndex < folderHistory.length - 1;
     const canGoUp = breadcrumb.length > 1;
 
     return (
         <Box sx={{ maxWidth: 936, margin: 'auto', position: 'relative' }}>
-            {/* Navigation Toolbar + File List */}
             <Paper elevation={0} sx={{ overflow: 'hidden', border: '1px solid', borderColor: 'divider' }}>
-                <Box sx={{ px: 2, py: 1.25, borderBottom: '1px solid', borderColor: 'divider' }}>
-                    <Typography variant="subtitle2" fontWeight={700}>Unduhan Torrent</Typography>
-                </Box>
-                <AppBar position="static" color="default" elevation={0} sx={{ borderBottom: '1px solid', borderColor: 'divider' }}>
-                    <Toolbar variant="dense">
-                        <Tooltip title="Kembali">
-                            <span>
-                                <IconButton size="small" onClick={goBack} disabled={!canGoBack}>
-                                    <ChevronLeftIcon />
-                                </IconButton>
-                            </span>
-                        </Tooltip>
-                        <Tooltip title="Maju">
-                            <span>
-                                <IconButton size="small" onClick={goForward} disabled={!canGoForward}>
-                                    <ChevronRightIcon />
-                                </IconButton>
-                            </span>
-                        </Tooltip>
-                        <Tooltip title="Naik ke folder induk">
-                            <span>
-                                <IconButton size="small" onClick={goUp} disabled={!canGoUp}>
-                                    <ArrowUpwardIcon />
-                                </IconButton>
-                            </span>
-                        </Tooltip>
+                <Tabs
+                    value={downloadTab}
+                    onChange={(_, v) => setDownloadTab(v)}
+                    variant="fullWidth"
+                    sx={{ borderBottom: '1px solid', borderColor: 'divider' }}
+                >
+                    <Tab label="Unduhan Torrent" />
+                    <Tab label={`Host Premium (${premiumTotal})`} />
+                </Tabs>
 
-                        <Divider orientation="vertical" flexItem sx={{ mx: 1 }} />
+                {downloadTab === 0 ? (
+                    <>
+                        <AppBar position="static" color="default" elevation={0} sx={{ borderBottom: '1px solid', borderColor: 'divider' }}>
+                            <Toolbar variant="dense">
+                                <Tooltip title="Kembali">
+                                    <span>
+                                        <IconButton size="small" onClick={goBack} disabled={!canGoBack}>
+                                            <ChevronLeftIcon />
+                                        </IconButton>
+                                    </span>
+                                </Tooltip>
+                                <Tooltip title="Maju">
+                                    <span>
+                                        <IconButton size="small" onClick={goForward} disabled={!canGoForward}>
+                                            <ChevronRightIcon />
+                                        </IconButton>
+                                    </span>
+                                </Tooltip>
+                                <Tooltip title="Naik ke folder induk">
+                                    <span>
+                                        <IconButton size="small" onClick={goUp} disabled={!canGoUp}>
+                                            <ArrowUpwardIcon />
+                                        </IconButton>
+                                    </span>
+                                </Tooltip>
 
-                        <Tooltip title="Beranda">
-                            <IconButton size="small" onClick={goHome}>
-                                <HomeIcon />
-                            </IconButton>
-                        </Tooltip>
-                        <Tooltip title="Refresh">
-                            <IconButton size="small" onClick={refresh}>
-                                <RefreshIcon />
-                            </IconButton>
-                        </Tooltip>
+                                <Divider orientation="vertical" flexItem sx={{ mx: 1 }} />
 
-                        <Divider orientation="vertical" flexItem sx={{ mx: 1 }} />
+                                <Tooltip title="Beranda">
+                                    <IconButton size="small" onClick={goHome}>
+                                        <HomeIcon />
+                                    </IconButton>
+                                </Tooltip>
+                                <Tooltip title="Refresh">
+                                    <IconButton size="small" onClick={refresh}>
+                                        <RefreshIcon />
+                                    </IconButton>
+                                </Tooltip>
 
-                        {/* Breadcrumb */}
-                        <Box sx={{ flex: 1, display: 'flex', alignItems: 'center', overflow: 'auto', ml: 1 }}>
-                            <FolderIcon sx={{ color: 'text.disabled', mr: 1, fontSize: 18 }} />
-                            <Breadcrumbs separator="›" sx={{ fontSize: 13 }}>
-                                {breadcrumb.map((item, index) =>
-                                    index === breadcrumb.length - 1 ? (
-                                        <Typography key={item.id || 'root'} variant="body2" fontWeight={500} color="text.primary" noWrap>
-                                            {item.name}
-                                        </Typography>
-                                    ) : (
-                                        <Link
-                                            key={item.id || 'root'}
-                                            component="button"
-                                            variant="body2"
-                                            underline="hover"
-                                            color="text.secondary"
-                                            onClick={() => navigateToBreadcrumb(item.id, index)}
-                                            sx={{ cursor: 'pointer' }}
-                                        >
-                                            {item.name}
-                                        </Link>
-                                    )
-                                )}
-                            </Breadcrumbs>
+                                <Divider orientation="vertical" flexItem sx={{ mx: 1 }} />
+
+                                {/* Breadcrumb */}
+                                <Box sx={{ flex: 1, display: 'flex', alignItems: 'center', overflow: 'auto', ml: 1 }}>
+                                    <FolderIcon sx={{ color: 'text.disabled', mr: 1, fontSize: 18 }} />
+                                    <Breadcrumbs separator="›" sx={{ fontSize: 13 }}>
+                                        {breadcrumb.map((item, index) =>
+                                            index === breadcrumb.length - 1 ? (
+                                                <Typography key={item.id || 'root'} variant="body2" fontWeight={500} color="text.primary" noWrap>
+                                                    {item.name}
+                                                </Typography>
+                                            ) : (
+                                                <Link
+                                                    key={item.id || 'root'}
+                                                    component="button"
+                                                    variant="body2"
+                                                    underline="hover"
+                                                    color="text.secondary"
+                                                    onClick={() => navigateToBreadcrumb(item.id, index)}
+                                                    sx={{ cursor: 'pointer' }}
+                                                >
+                                                    {item.name}
+                                                </Link>
+                                            )
+                                        )}
+                                    </Breadcrumbs>
+                                </Box>
+
+                                <Tooltip title="Info Penting">
+                                    <IconButton size="small" onClick={() => setShowInfo(true)}>
+                                        <InfoOutlinedIcon />
+                                    </IconButton>
+                                </Tooltip>
+                            </Toolbar>
+                        </AppBar>
+
+                        <Box sx={{ p: 0 }}>
+                            <FileListTable
+                                files={files}
+                                loading={loading}
+                                onFolderClick={navigateToFolder}
+                                onDeleted={refresh}
+                                onFolderDownload={startFolderDownload}
+                            />
                         </Box>
-
-                        <Tooltip title="Info Penting">
-                            <IconButton size="small" onClick={() => setShowInfo(true)}>
-                                <InfoOutlinedIcon />
-                            </IconButton>
-                        </Tooltip>
-                    </Toolbar>
-                </AppBar>
-
-                {/* File list */}
-                <Box sx={{ p: 0 }}>
-                    <FileListTable files={files} loading={loading} onFolderClick={navigateToFolder} />
-                </Box>
-            </Paper>
-
-            <Paper elevation={0} sx={{ mt: 2, p: 2, border: '1px solid', borderColor: 'divider' }}>
-                <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1.25 }}>
-                    <Typography variant="subtitle2" fontWeight={700}>Unduhan Host Premium</Typography>
-                    <Typography variant="caption" color="text.secondary">
-                        {premiumTotal} data
-                    </Typography>
-                </Box>
-
-                {loadingPremium ? (
-                    <Typography variant="body2" color="text.secondary">Memuat riwayat premium...</Typography>
-                ) : premiumHistory.length === 0 ? (
-                    <Typography variant="body2" color="text.secondary">Belum ada riwayat download host premium.</Typography>
+                    </>
                 ) : (
-                    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
-                        {premiumHistory.map((item) => (
-                            <Paper key={item.id} variant="outlined" sx={{ p: 1.25 }}>
-                                <Box sx={{ display: 'flex', justifyContent: 'space-between', gap: 1, flexWrap: 'wrap' }}>
-                                    <Box sx={{ minWidth: 0, flex: 1 }}>
-                                        <Typography variant="body2" fontWeight={600} noWrap title={item.filename || item.url}>
-                                            {item.filename || item.url}
-                                        </Typography>
-                                        <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
-                                            Host: {item.host || '-'} | Tanggal: {formatDateTime(item.created_at)}
-                                        </Typography>
-                                        <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
-                                            Ukuran: {(item.size_bytes > 0 ? `${(Number(item.size_bytes) / (1024 * 1024 * 1024)).toFixed(2)} GB` : '-')} |
-                                            {' '}<AttachMoneyIcon sx={{ fontSize: 12, verticalAlign: 'middle', mx: 0.25 }} /> Rp {formatIDR(item.price || 0)}
-                                        </Typography>
-                                    </Box>
+                    <Box sx={{ p: 2 }}>
+                        {loadingPremium ? (
+                            <Typography variant="body2" color="text.secondary">Memuat riwayat premium...</Typography>
+                        ) : premiumHistory.length === 0 ? (
+                            <Typography variant="body2" color="text.secondary">Belum ada riwayat download host premium.</Typography>
+                        ) : (
+                            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+                                {premiumHistory.map((item) => (
+                                    <Paper key={item.id} variant="outlined" sx={{ p: 1.25 }}>
+                                        <Box sx={{ display: 'flex', justifyContent: 'space-between', gap: 1, flexWrap: 'wrap' }}>
+                                            <Box sx={{ minWidth: 0, flex: 1 }}>
+                                                <Typography variant="body2" fontWeight={600} noWrap title={item.filename || item.url}>
+                                                    {item.filename || item.url}
+                                                </Typography>
+                                                <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+                                                    Host: {item.host || '-'} | Tanggal: {formatDateTime(item.created_at)}
+                                                </Typography>
+                                                <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+                                                    Ukuran: {(item.size_bytes > 0 ? `${(Number(item.size_bytes) / (1024 * 1024 * 1024)).toFixed(2)} GB` : '-')} |
+                                                    {' '}<AttachMoneyIcon sx={{ fontSize: 12, verticalAlign: 'middle', mx: 0.25 }} /> Rp {formatIDR(item.price || 0)}
+                                                </Typography>
+                                            </Box>
 
-                                    <Box sx={{ display: 'flex', gap: 0.75, alignItems: 'center', flexWrap: 'wrap' }}>
-                                        {item.result_url ? (
-                                            <Button
-                                                size="small"
-                                                variant="contained"
-                                                startIcon={<DownloadIcon fontSize="small" />}
-                                                onClick={() => window.open(item.result_url, '_blank', 'noopener,noreferrer')}
-                                                sx={{ textTransform: 'none' }}
-                                            >
-                                                Unduh
-                                            </Button>
-                                        ) : null}
-                                        {item.stream_url ? (
-                                            <Button
-                                                size="small"
-                                                variant="outlined"
-                                                color="success"
-                                                startIcon={<PlayArrowIcon fontSize="small" />}
-                                                onClick={() => window.open(item.stream_url, '_blank', 'noopener,noreferrer')}
-                                                sx={{ textTransform: 'none' }}
-                                            >
-                                                Streaming
-                                            </Button>
-                                        ) : null}
+                                            <Box sx={{ display: 'flex', gap: 0.75, alignItems: 'center', flexWrap: 'wrap' }}>
+                                                {item.result_url ? (
+                                                    <Button
+                                                        size="small"
+                                                        variant="contained"
+                                                        startIcon={<DownloadIcon fontSize="small" />}
+                                                        onClick={() => window.open(item.result_url, '_blank', 'noopener,noreferrer')}
+                                                        sx={{ textTransform: 'none' }}
+                                                    >
+                                                        Unduh
+                                                    </Button>
+                                                ) : null}
+                                                {item.stream_url ? (
+                                                    <Button
+                                                        size="small"
+                                                        variant="outlined"
+                                                        color="success"
+                                                        startIcon={<PlayArrowIcon fontSize="small" />}
+                                                        onClick={() => window.open(item.stream_url, '_blank', 'noopener,noreferrer')}
+                                                        sx={{ textTransform: 'none' }}
+                                                    >
+                                                        Streaming
+                                                    </Button>
+                                                ) : null}
+                                                <Button
+                                                    size="small"
+                                                    variant="text"
+                                                    color="error"
+                                                    startIcon={<DeleteOutlineIcon fontSize="small" />}
+                                                    disabled={deletingPremiumId === item.id}
+                                                    onClick={() => setDeletePremiumTarget(item)}
+                                                    sx={{ textTransform: 'none' }}
+                                                >
+                                                    {deletingPremiumId === item.id ? 'Menghapus...' : 'Delete'}
+                                                </Button>
+                                            </Box>
+                                        </Box>
+                                    </Paper>
+                                ))}
+
+                                <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mt: 0.5 }}>
+                                    <Typography variant="caption" color="text.secondary">
+                                        Halaman {premiumPage} dari {premiumTotalPages}
+                                    </Typography>
+                                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                                        <Tooltip title="Halaman sebelumnya">
+                                            <span>
+                                                <IconButton
+                                                    size="small"
+                                                    disabled={premiumPage <= 1}
+                                                    onClick={() => setPremiumPage((p) => Math.max(1, p - 1))}
+                                                >
+                                                    <ChevronLeftIcon fontSize="small" />
+                                                </IconButton>
+                                            </span>
+                                        </Tooltip>
+                                        <Tooltip title="Halaman berikutnya">
+                                            <span>
+                                                <IconButton
+                                                    size="small"
+                                                    disabled={premiumPage >= premiumTotalPages}
+                                                    onClick={() => setPremiumPage((p) => Math.min(premiumTotalPages, p + 1))}
+                                                >
+                                                    <ChevronRightIcon fontSize="small" />
+                                                </IconButton>
+                                            </span>
+                                        </Tooltip>
                                     </Box>
                                 </Box>
-                            </Paper>
-                        ))}
-
-                        <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mt: 0.5 }}>
-                            <Typography variant="caption" color="text.secondary">
-                                Halaman {premiumPage} dari {premiumTotalPages}
-                            </Typography>
-                            <Box sx={{ display: 'flex', gap: 1 }}>
-                                <Button
-                                    size="small"
-                                    variant="outlined"
-                                    disabled={premiumPage <= 1}
-                                    onClick={() => setPremiumPage((p) => Math.max(1, p - 1))}
-                                    sx={{ textTransform: 'none' }}
-                                >
-                                    Sebelumnya
-                                </Button>
-                                <Button
-                                    size="small"
-                                    variant="outlined"
-                                    disabled={premiumPage >= premiumTotalPages}
-                                    onClick={() => setPremiumPage((p) => Math.min(premiumTotalPages, p + 1))}
-                                    sx={{ textTransform: 'none' }}
-                                >
-                                    Berikutnya
-                                </Button>
                             </Box>
-                        </Box>
+                        )}
                     </Box>
                 )}
             </Paper>
@@ -358,7 +425,7 @@ export default function TasksPage() {
                         right: 32,
                     }}
                 >
-                    <DownloadingIcon />
+                    <AddIcon />
                 </Fab>
             </Tooltip>
 
@@ -376,8 +443,8 @@ export default function TasksPage() {
                         <Box sx={{ display: 'flex', gap: 2 }}>
                             <FolderIcon color="primary" />
                             <Typography variant="body2">
-                                <strong>Unduhan folder berupa file .txt.</strong> Gunakan <strong>1DM</strong> di Android, atau{' '}
-                                <strong>JDownloader/IDM</strong> di PC untuk import.
+                                <strong>Unduhan folder via halaman proses khusus.</strong> Sistem akan membuka halaman fokus progress,
+                                lalu pilih folder tujuan untuk mulai download.
                             </Typography>
                         </Box>
                         <Box sx={{ display: 'flex', gap: 2 }}>
@@ -391,6 +458,31 @@ export default function TasksPage() {
                 <DialogActions>
                     <Button onClick={() => setShowInfo(false)} variant="contained" fullWidth>
                         Mengerti
+                    </Button>
+                </DialogActions>
+            </Dialog>
+
+            <Dialog open={!!deletePremiumTarget} onClose={() => setDeletePremiumTarget(null)} maxWidth="xs" fullWidth>
+                <DialogTitle>Konfirmasi Hapus</DialogTitle>
+                <DialogContent>
+                    <Typography variant="body2" sx={{ mt: 0.5 }}>
+                        Hapus item riwayat host premium ini?
+                    </Typography>
+                    <Typography variant="body2" color="text.secondary" sx={{ mt: 1, wordBreak: 'break-word' }}>
+                        {deletePremiumTarget?.filename || deletePremiumTarget?.url || '-'}
+                    </Typography>
+                </DialogContent>
+                <DialogActions>
+                    <Button variant="outlined" onClick={() => setDeletePremiumTarget(null)}>
+                        Batal
+                    </Button>
+                    <Button
+                        variant="contained"
+                        color="error"
+                        onClick={handleDeletePremiumItem}
+                        disabled={deletingPremiumId === deletePremiumTarget?.id}
+                    >
+                        {deletingPremiumId === deletePremiumTarget?.id ? 'Menghapus...' : 'Hapus'}
                     </Button>
                 </DialogActions>
             </Dialog>

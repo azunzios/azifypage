@@ -44,6 +44,8 @@ export default function ProfilePage() {
     const [showDeleteDialog, setShowDeleteDialog] = useState(false);
     const [deleteConfirm, setDeleteConfirm] = useState('');
     const [deleting, setDeleting] = useState(false);
+    const [showClearPremiumDialog, setShowClearPremiumDialog] = useState(false);
+    const [clearingPremium, setClearingPremium] = useState(false);
 
     // Name change
     const [displayName, setDisplayName] = useState(user?.name || '');
@@ -153,6 +155,24 @@ export default function ProfilePage() {
 
     const handleDarkModeToggle = () => {
         setMode(mode === 'dark' ? 'light' : 'dark');
+    };
+
+    const handleClearPremiumHistory = async () => {
+        setClearingPremium(true);
+        try {
+            const res = await fetch('/api/premium/request?all=1', { method: 'DELETE' });
+            const data = await res.json().catch(() => ({}));
+            if (res.ok) {
+                showMessage(data.message || 'Riwayat host premium berhasil dihapus.');
+            } else {
+                showMessage(data.message || 'Gagal menghapus riwayat host premium', 'error');
+            }
+        } catch (err) {
+            showMessage('Error: ' + err.message, 'error');
+        } finally {
+            setClearingPremium(false);
+            setShowClearPremiumDialog(false);
+        }
     };
 
     // Change name
@@ -316,6 +336,31 @@ export default function ProfilePage() {
                             )}
                         </>
                     )}
+                </CardContent>
+            </Card>
+
+            {/* Riwayat Host Premium Section */}
+            <Card variant="outlined" sx={{ mb: 3 }}>
+                <CardContent sx={{ p: 3 }}>
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2 }}>
+                        <DeleteForeverIcon color="warning" />
+                        <Typography variant="subtitle1" fontWeight={600}>
+                            Riwayat Unduhan Host Premium
+                        </Typography>
+                    </Box>
+
+                    <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+                        Hapus semua riwayat unduhan host premium dari akun ini.
+                    </Typography>
+
+                    <Button
+                        variant="outlined"
+                        color="warning"
+                        onClick={() => setShowClearPremiumDialog(true)}
+                        startIcon={<DeleteForeverIcon />}
+                    >
+                        Hapus Riwayat Host Premium
+                    </Button>
                 </CardContent>
             </Card>
 
@@ -492,6 +537,35 @@ export default function ProfilePage() {
                         disabled={deleteConfirm !== 'HAPUS AKUN' || deleting}
                     >
                         {deleting ? 'Menghapus...' : 'Hapus Permanen'}
+                    </Button>
+                </DialogActions>
+            </Dialog>
+
+            {/* Clear Premium History Dialog */}
+            <Dialog open={showClearPremiumDialog} onClose={() => setShowClearPremiumDialog(false)} maxWidth="xs" fullWidth>
+                <DialogTitle sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                    <WarningAmberIcon color="warning" />
+                    Hapus Riwayat Host Premium
+                </DialogTitle>
+                <DialogContent>
+                    <Alert severity="warning" sx={{ mb: 2 }}>
+                        Riwayat host premium akan dihapus dari daftar unduhan.
+                    </Alert>
+                    <Typography variant="body2">
+                        Lanjutkan hapus semua riwayat host premium?
+                    </Typography>
+                </DialogContent>
+                <DialogActions sx={{ px: 3, pb: 2 }}>
+                    <Button onClick={() => setShowClearPremiumDialog(false)} variant="outlined">
+                        Batal
+                    </Button>
+                    <Button
+                        onClick={handleClearPremiumHistory}
+                        variant="contained"
+                        color="warning"
+                        disabled={clearingPremium}
+                    >
+                        {clearingPremium ? 'Menghapus...' : 'Hapus Semua'}
                     </Button>
                 </DialogActions>
             </Dialog>

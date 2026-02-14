@@ -8,11 +8,17 @@ import Button from '@mui/joy/Button';
 import Box from '@mui/joy/Box';
 import Typography from '@mui/joy/Typography';
 import Sheet from '@mui/joy/Sheet';
+import Divider from '@mui/joy/Divider';
 import IconButton from '@mui/joy/IconButton';
 import CloseIcon from '@mui/icons-material/Close';
 
 export default function PreviewModal({ preview, onConfirm, onCancel }) {
     if (!preview) return null;
+
+    const formatIDR = (n) => `Rp ${Number(n || 0).toLocaleString('id-ID')}`;
+    const originalPrice = Number(preview.original_price || preview.price || 0);
+    const discountAmount = Number(preview.discount_amount || 0);
+    const finalPrice = Number(preview.price || 0);
 
     return (
         <Modal open={!!preview} onClose={onCancel}>
@@ -36,21 +42,13 @@ export default function PreviewModal({ preview, onConfirm, onCancel }) {
                             mb: 2,
                         }}
                     >
-                        <Typography level="title-sm" sx={{ fontWeight: 600 }} noWrap>
-                            {preview.name}
+                        <Typography level="title-sm" sx={{ fontWeight: 700 }}>
+                            Konfirmasi Link
                         </Typography>
-                        <Box sx={{ mt: 1, display: 'flex', justifyContent: 'space-between', gap: 1 }}>
-                            <Typography level="body-xs" color="neutral">
-                                {preview.size} ({preview.size_gb})
-                            </Typography>
-                            <Typography
-                                level="body-xs"
-                                sx={{ fontWeight: 600 }}
-                                color={preview.cached ? 'success' : 'warning'}
-                            >
-                                {preview.cached ? 'Siap diunduh' : 'Sedang diproses...'}
-                            </Typography>
-                        </Box>
+                        <Divider sx={{ my: 0.75 }} />
+                        <Typography level="body-sm" sx={{ overflowWrap: 'anywhere' }}>
+                            {preview.source_url || '-'}
+                        </Typography>
                     </Sheet>
 
                     <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', px: 0.25 }}>
@@ -58,9 +56,38 @@ export default function PreviewModal({ preview, onConfirm, onCancel }) {
                             Total Harga
                         </Typography>
                         <Typography level="h3" color="primary" sx={{ fontWeight: 800 }}>
-                            Rp {preview.price}
+                            {formatIDR(finalPrice)}
                         </Typography>
                     </Box>
+
+                    <Sheet
+                        variant="outlined"
+                        sx={{ mt: 1.5, p: 1.25, borderRadius: 'sm' }}
+                    >
+                        <Typography level="body-sm" sx={{ fontWeight: 700 }}>
+                            STRUK PENGURANGAN VOUCHER
+                        </Typography>
+                        <Divider sx={{ my: 0.75 }} />
+                        <Box sx={{ display: 'grid', gridTemplateColumns: '1fr auto', rowGap: 0.5, columnGap: 1 }}>
+                            <Typography level="body-xs" color="neutral">Harga Item</Typography>
+                            <Typography level="body-xs" sx={{ fontWeight: 600 }}>{formatIDR(originalPrice)}</Typography>
+
+                            <Typography level="body-xs" color="neutral">Potongan Voucher</Typography>
+                            <Typography level="body-xs" sx={{ fontWeight: 600 }}>
+                                - {formatIDR(discountAmount)}
+                            </Typography>
+
+                            <Typography level="body-xs" color="neutral">Subtotal Setelah Voucher</Typography>
+                            <Typography level="body-xs" sx={{ fontWeight: 700 }}>
+                                {formatIDR(finalPrice)}
+                            </Typography>
+                        </Box>
+                        {preview.voucher_code ? (
+                            <Typography level="body-xs" color="neutral" sx={{ mt: 0.75 }}>
+                                Voucher: {preview.voucher_code}
+                            </Typography>
+                        ) : null}
+                    </Sheet>
                 </DialogContent>
                 <DialogActions sx={{ pt: 1 }}>
                     <Button onClick={onCancel} variant="outlined" fullWidth>

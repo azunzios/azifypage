@@ -50,6 +50,26 @@ export default function AdminPage() {
     const [pricing, setPricing] = useState([]);
     const [editingPricing, setEditingPricing] = useState(null);
 
+    // Voucher state
+    const [vouchers, setVouchers] = useState([]);
+    const [editingVoucher, setEditingVoucher] = useState(null);
+    const [voucherCreateOpen, setVoucherCreateOpen] = useState(false);
+    const [voucherDeleteTarget, setVoucherDeleteTarget] = useState(null);
+    const [newVoucher, setNewVoucher] = useState({
+        code: '',
+        name: '',
+        description: '',
+        discount_type: 'percentage',
+        discount_value: '10',
+        min_order_amount: '0',
+        min_discount_amount: '0',
+        max_discount_amount: '0',
+        applies_to: 'all',
+        usage_scope: 'global',
+        usage_limit: '0',
+        is_active: true,
+    });
+
     // Users state
     const [users, setUsers] = useState([]);
     const [adminIdentifier, setAdminIdentifier] = useState('');
@@ -111,6 +131,13 @@ export default function AdminPage() {
     const guideHelpPost = officialPosts.find((p) => String(p?.type || '').toLowerCase() === 'guide_help') || null;
     const regularOfficialPosts = officialPosts.filter((p) => String(p?.type || '').toLowerCase() !== 'guide_help');
 
+    const voucherFieldSx = {
+        '& .MuiInputBase-input': { py: 1.2 },
+        '& .MuiInputLabel-root': { px: 0.5, backgroundColor: 'background.paper' },
+    };
+
+    const sanitizeNumericInput = (value) => String(value || '').replace(/[^0-9]/g, '');
+
     // Topup decision dialog
     const [topupDecisionOpen, setTopupDecisionOpen] = useState(false);
     const [topupDecisionId, setTopupDecisionId] = useState(null);
@@ -119,6 +146,7 @@ export default function AdminPage() {
 
     useEffect(() => {
         fetchPricing();
+        fetchVouchers();
         fetchUsers();
         fetchStats();
         fetchHosts();
@@ -210,6 +238,121 @@ export default function AdminPage() {
             setPricing(data);
         } catch (err) {
             console.error('Failed to fetch pricing:', err);
+        }
+    };
+
+    const fetchVouchers = async () => {
+        try {
+            const res = await fetch('/api/admin/vouchers');
+            if (!res.ok) return;
+            const data = await res.json();
+            setVouchers(Array.isArray(data) ? data : []);
+        } catch (err) {
+            console.error('Failed to fetch vouchers:', err);
+        }
+    };
+
+    const createVoucher = async () => {
+        if (!newVoucher.code.trim()) {
+            setMessage('Kode voucher wajib diisi');
+            return false;
+        }
+        try {
+            const toInt = (v, fallback = 0) => {
+                const n = parseInt(String(v ?? '').trim(), 10);
+                return Number.isFinite(n) ? n : fallback;
+            };
+
+            const payload = {
+                ...newVoucher,
+                code: newVoucher.code.trim().toUpperCase(),
+                name: newVoucher.name?.trim() || '',
+                discount_value: toInt(newVoucher.discount_value, 0),
+                min_order_amount: toInt(newVoucher.min_order_amount, 0),
+                min_discount_amount: toInt(newVoucher.min_discount_amount, 0),
+                max_discount_amount: toInt(newVoucher.max_discount_amount, 0),
+                usage_limit: toInt(newVoucher.usage_limit, 0),
+            };
+            const res = await fetch('/api/admin/vouchers', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload),
+            });
+            if (!res.ok) {
+                const t = await res.text();
+                setMessage(t || 'Gagal membuat voucher');
+                return false;
+            }
+            setMessage('Voucher berhasil dibuat');
+            setNewVoucher({
+                code: '',
+                name: '',
+                description: '',
+                discount_type: 'percentage',
+                discount_value: '10',
+                min_order_amount: '0',
+                min_discount_amount: '0',
+                max_discount_amount: '0',
+                applies_to: 'all',
+                usage_scope: 'global',
+                usage_limit: '0',
+                is_active: true,
+            });
+            fetchVouchers();
+            return true;
+        } catch (err) {
+            setMessage('Error: ' + err.message);
+            return false;
+        }
+    };
+
+    const updateVoucher = async (voucher) => {
+        try {
+            const toInt = (v, fallback = 0) => {
+                const n = parseInt(String(v ?? '').trim(), 10);
+                return Number.isFinite(n) ? n : fallback;
+            };
+
+            const payload = {
+                ...voucher,
+                discount_value: toInt(voucher?.discount_value, 0),
+                min_order_amount: toInt(voucher?.min_order_amount, 0),
+                min_discount_amount: toInt(voucher?.min_discount_amount, 0),
+                max_discount_amount: toInt(voucher?.max_discount_amount, 0),
+                usage_limit: toInt(voucher?.usage_limit, 0),
+            };
+
+            const res = await fetch('/api/admin/vouchers', {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload),
+            });
+            if (!res.ok) {
+                const t = await res.text();
+                setMessage(t || 'Gagal update voucher');
+                return;
+            }
+            setMessage('Voucher berhasil diupdate');
+            setEditingVoucher(null);
+            fetchVouchers();
+        } catch (err) {
+            setMessage('Error: ' + err.message);
+        }
+    };
+
+    const deleteVoucher = async (id) => {
+        try {
+            const res = await fetch(`/api/admin/vouchers?id=${id}`, { method: 'DELETE' });
+            if (!res.ok) {
+                const t = await res.text();
+                setMessage(t || 'Gagal hapus voucher');
+                return;
+            }
+            setMessage('Voucher berhasil dihapus');
+            setVoucherDeleteTarget(null);
+            fetchVouchers();
+        } catch (err) {
+            setMessage('Error: ' + err.message);
         }
     };
 
@@ -769,6 +912,7 @@ export default function AdminPage() {
                     <Tab label="Available Host" sx={{ textTransform: 'none' }} />
                     <Tab label="Banner" sx={{ textTransform: 'none' }} />
                     <Tab label="Informasi Resmi" sx={{ textTransform: 'none' }} />
+                    <Tab label="Voucher" sx={{ textTransform: 'none' }} />
                     <Tab
                         label={
                             <Badge color="warning" badgeContent={pendingTopupCount} invisible={pendingTopupCount <= 0}>
@@ -1451,8 +1595,109 @@ export default function AdminPage() {
                     </Box>
                 )}
 
-                {/* Top Up Tab */}
+                {/* Voucher Tab */}
                 {activeTab === 5 && (
+                    <Box sx={{ p: 3, display: 'flex', flexDirection: 'column', gap: 2 }}>
+                        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                            <Typography variant="subtitle1" fontWeight={600}>Manajemen Voucher</Typography>
+                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
+                                <Button size="small" variant="contained" onClick={() => setVoucherCreateOpen(true)} sx={{ textTransform: 'none' }}>
+                                    Buat Voucher
+                                </Button>
+                                <IconButton size="small" onClick={fetchVouchers}>
+                                    <RefreshIcon fontSize="small" />
+                                </IconButton>
+                            </Box>
+                        </Box>
+
+                        <TableContainer>
+                            <Table size="small">
+                                <TableHead>
+                                    <TableRow>
+                                        <TableCell sx={{ fontWeight: 600 }}>Kode</TableCell>
+                                        <TableCell sx={{ fontWeight: 600 }}>Tipe</TableCell>
+                                        <TableCell sx={{ fontWeight: 600 }}>Nilai</TableCell>
+                                        <TableCell sx={{ fontWeight: 600 }}>Min Belanja</TableCell>
+                                        <TableCell sx={{ fontWeight: 600 }}>Min/Maks Diskon</TableCell>
+                                        <TableCell sx={{ fontWeight: 600 }}>Kuota</TableCell>
+                                        <TableCell sx={{ fontWeight: 600 }}>Berlaku</TableCell>
+                                        <TableCell sx={{ fontWeight: 600 }}>Status</TableCell>
+                                        <TableCell sx={{ fontWeight: 600 }}>Aksi</TableCell>
+                                    </TableRow>
+                                </TableHead>
+                                <TableBody>
+                                    {vouchers.map((v) => {
+                                        return (
+                                            <TableRow key={v.id} hover>
+                                                <TableCell>
+                                                    <Typography variant="body2" fontWeight={700}>{v.code}</Typography>
+                                                </TableCell>
+                                                <TableCell>
+                                                    <Chip size="small" label={v.discount_type} />
+                                                </TableCell>
+                                                <TableCell>
+                                                    <Typography variant="body2">{v.discount_type === 'percentage' ? `${v.discount_value}%` : `Rp ${formatIDRNumber(v.discount_value || 0)}`}</Typography>
+                                                </TableCell>
+                                                <TableCell>
+                                                    <Typography variant="body2">Rp {formatIDRNumber(v.min_order_amount || 0)}</Typography>
+                                                </TableCell>
+                                                <TableCell>
+                                                    <Typography variant="caption" color="text.secondary">
+                                                        Rp {formatIDRNumber(v.min_discount_amount || 0)} / {v.max_discount_amount > 0 ? `Rp ${formatIDRNumber(v.max_discount_amount)}` : 'tanpa batas'}
+                                                    </Typography>
+                                                </TableCell>
+                                                <TableCell>
+                                                        <Typography variant="caption" color="text.secondary">
+                                                            {v.usage_limit > 0 ? `${v.used_count}/${v.usage_limit}` : `${v.used_count} / unlimited`} • {String(v.usage_scope || 'global') === 'per_user' ? 'per user' : 'kumulatif'}
+                                                        </Typography>
+                                                </TableCell>
+                                                <TableCell>
+                                                    <Chip size="small" label={v.applies_to || 'all'} variant="outlined" />
+                                                </TableCell>
+                                                <TableCell>
+                                                    <Chip size="small" label={v.is_active ? 'Aktif' : 'Nonaktif'} color={v.is_active ? 'success' : 'default'} variant={v.is_active ? 'filled' : 'outlined'} />
+                                                </TableCell>
+                                                <TableCell>
+                                                    <Box sx={{ display: 'flex', gap: 0.25 }}>
+                                                        <IconButton
+                                                            size="small"
+                                                            onClick={() => setEditingVoucher({
+                                                                ...v,
+                                                                discount_value: String(v.discount_value ?? 0),
+                                                                min_order_amount: String(v.min_order_amount ?? 0),
+                                                                min_discount_amount: String(v.min_discount_amount ?? 0),
+                                                                max_discount_amount: String(v.max_discount_amount ?? 0),
+                                                                usage_scope: String(v.usage_scope || 'global'),
+                                                                usage_limit: String(v.usage_limit ?? 0),
+                                                            })}
+                                                        >
+                                                            <EditIcon fontSize="small" />
+                                                        </IconButton>
+                                                        <IconButton size="small" color="error" onClick={() => setVoucherDeleteTarget(v)}>
+                                                            <DeleteOutlineIcon fontSize="small" />
+                                                        </IconButton>
+                                                    </Box>
+                                                </TableCell>
+                                            </TableRow>
+                                        );
+                                    })}
+
+                                    {vouchers.length === 0 && (
+                                        <TableRow>
+                                            <TableCell colSpan={9} sx={{ textAlign: 'center', py: 3 }}>
+                                                <Typography variant="body2" color="text.secondary">Belum ada voucher.</Typography>
+                                            </TableCell>
+                                        </TableRow>
+                                    )}
+                                </TableBody>
+                            </Table>
+                        </TableContainer>
+
+                    </Box>
+                )}
+
+                {/* Top Up Tab */}
+                {activeTab === 6 && (
                     <Box sx={{ p: 3 }}>
                         <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 2 }}>
                             <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
@@ -1692,6 +1937,183 @@ export default function AdminPage() {
                     </Button>
                     <Button onClick={saveUserEdit} variant="contained" disabled={loading} sx={{ textTransform: 'none', fontWeight: 700 }}>
                         Simpan Perubahan
+                    </Button>
+                </DialogActions>
+            </Dialog>
+
+            <Dialog open={voucherCreateOpen} onClose={() => setVoucherCreateOpen(false)} maxWidth="md" fullWidth scroll="paper">
+                <DialogTitle sx={{ fontWeight: 800 }}>Buat Voucher Baru</DialogTitle>
+                <DialogContent sx={{ pt: 1, maxHeight: '72vh', overflowY: 'auto' }}>
+                    <Box sx={{ display: 'grid', gap: 2}}>
+                        <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', sm: '1fr 1fr 1fr' }, gap: 1, mb: 0.5, mt:2}}>
+                            <TextField size="small" sx={voucherFieldSx} label="Kode" value={newVoucher.code} onChange={(e) => setNewVoucher((p) => ({ ...p, code: e.target.value.toUpperCase() }))} />
+                            <TextField size="small" sx={voucherFieldSx} label="Nama" value={newVoucher.name} onChange={(e) => setNewVoucher((p) => ({ ...p, name: e.target.value }))} />
+                            <TextField
+                                select
+                                size="small"
+                                sx={voucherFieldSx}
+                                label="Berlaku Untuk"
+                                value={newVoucher.applies_to}
+                                onChange={(e) => setNewVoucher((p) => ({ ...p, applies_to: e.target.value }))}
+                            >
+                                <MenuItem value="all">Semua</MenuItem>
+                                <MenuItem value="torrent">Torrent</MenuItem>
+                                <MenuItem value="premium">Premium</MenuItem>
+                            </TextField>
+                        </Box>
+
+                        <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', sm: '180px 1fr 1fr' }, gap: 1, mb: 0.5 }}>
+                            <TextField
+                                select
+                                size="small"
+                                sx={voucherFieldSx}
+                                label="Tipe Diskon"
+                                value={newVoucher.discount_type}
+                                onChange={(e) => setNewVoucher((p) => ({ ...p, discount_type: e.target.value }))}
+                            >
+                                <MenuItem value="percentage">Persentase (%)</MenuItem>
+                                <MenuItem value="fixed">Nominal Tetap (Rp)</MenuItem>
+                            </TextField>
+                            <TextField size="small" type="text" sx={voucherFieldSx} label="Nilai Diskon" value={newVoucher.discount_value} onChange={(e) => setNewVoucher((p) => ({ ...p, discount_value: sanitizeNumericInput(e.target.value) }))} inputProps={{ inputMode: 'numeric' }} />
+                            <TextField size="small" type="text" sx={voucherFieldSx} label="Minimal Belanja" value={newVoucher.min_order_amount} onChange={(e) => setNewVoucher((p) => ({ ...p, min_order_amount: sanitizeNumericInput(e.target.value) }))} inputProps={{ inputMode: 'numeric' }} />
+                        </Box>
+
+                        <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', sm: '1fr 1fr 1fr' }, gap: 1, mb: 0.5 }}>
+                            <TextField size="small" type="text" sx={voucherFieldSx} label="Minimal Diskon" value={newVoucher.min_discount_amount} onChange={(e) => setNewVoucher((p) => ({ ...p, min_discount_amount: sanitizeNumericInput(e.target.value) }))} inputProps={{ inputMode: 'numeric' }} />
+                            <TextField size="small" type="text" sx={voucherFieldSx} label="Maksimal Diskon (0=tanpa batas)" value={newVoucher.max_discount_amount} onChange={(e) => setNewVoucher((p) => ({ ...p, max_discount_amount: sanitizeNumericInput(e.target.value) }))} inputProps={{ inputMode: 'numeric' }} />
+                            <TextField size="small" type="text" sx={voucherFieldSx} label="Kuota Pakai (0=unlimited)" value={newVoucher.usage_limit} onChange={(e) => setNewVoucher((p) => ({ ...p, usage_limit: sanitizeNumericInput(e.target.value) }))} inputProps={{ inputMode: 'numeric' }} />
+                        </Box>
+
+                        <FormControlLabel
+                            sx={{ m: 0, mb: 0.5 }}
+                            control={<Switch checked={newVoucher.usage_scope === 'per_user'} onChange={(e) => setNewVoucher((p) => ({ ...p, usage_scope: e.target.checked ? 'per_user' : 'global' }))} size="small" />}
+                            label={newVoucher.usage_scope === 'per_user' ? 'Kuota dihitung per user' : 'Kuota dihitung kumulatif keseluruhan'}
+                        />
+
+                        <TextField
+                            size="small"
+                                sx={voucherFieldSx}
+                            label="Deskripsi"
+                            value={newVoucher.description}
+                            onChange={(e) => setNewVoucher((p) => ({ ...p, description: e.target.value }))}
+                        />
+                    </Box>
+                </DialogContent>
+                <DialogActions sx={{ px: 3, pb: 2.5 }}>
+                    <Button variant="outlined" onClick={() => setVoucherCreateOpen(false)} sx={{ textTransform: 'none' }}>
+                        Batal
+                    </Button>
+                    <Button
+                        variant="contained"
+                        onClick={async () => {
+                            const ok = await createVoucher();
+                            if (ok) setVoucherCreateOpen(false);
+                        }}
+                        disabled={loading}
+                        sx={{ textTransform: 'none', fontWeight: 700 }}
+                    >
+                        Simpan Voucher
+                    </Button>
+                </DialogActions>
+            </Dialog>
+
+            <Dialog open={!!editingVoucher} onClose={() => setEditingVoucher(null)} maxWidth="md" fullWidth>
+                <DialogTitle sx={{ fontWeight: 800 }}>Edit Voucher</DialogTitle>
+                <DialogContent sx={{ pt: 1, maxHeight: '72vh', overflowY: 'auto' }}>
+                    <Box sx={{ display: 'grid', gap: 2 }}>
+                        <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', sm: '1fr 1fr 1fr' }, gap: 1, mb: 0.5, mt:2     }}>
+                            <TextField size="small" sx={voucherFieldSx} label="Kode" value={editingVoucher?.code || ''} onChange={(e) => setEditingVoucher((p) => ({ ...p, code: e.target.value.toUpperCase() }))} />
+                            <TextField size="small" sx={voucherFieldSx} label="Nama" value={editingVoucher?.name || ''} onChange={(e) => setEditingVoucher((p) => ({ ...p, name: e.target.value }))} />
+                            <TextField
+                                select
+                                size="small"
+                                sx={voucherFieldSx}
+                                label="Berlaku Untuk"
+                                value={editingVoucher?.applies_to || 'all'}
+                                onChange={(e) => setEditingVoucher((p) => ({ ...p, applies_to: e.target.value }))}
+                            >
+                                <MenuItem value="all">Semua</MenuItem>
+                                <MenuItem value="torrent">Torrent</MenuItem>
+                                <MenuItem value="premium">Premium</MenuItem>
+                            </TextField>
+                        </Box>
+
+                        <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', sm: '180px 1fr 1fr' }, gap: 1, mb: 0.5 }}>
+                            <TextField
+                                select
+                                size="small"
+                                sx={voucherFieldSx}
+                                label="Tipe Diskon"
+                                value={editingVoucher?.discount_type || 'percentage'}
+                                onChange={(e) => setEditingVoucher((p) => ({ ...p, discount_type: e.target.value }))}
+                            >
+                                <MenuItem value="percentage">Persentase (%)</MenuItem>
+                                <MenuItem value="fixed">Nominal Tetap (Rp)</MenuItem>
+                            </TextField>
+                            <TextField size="small" type="text" sx={voucherFieldSx} label="Nilai Diskon" value={editingVoucher?.discount_value ?? ''} onChange={(e) => setEditingVoucher((p) => ({ ...p, discount_value: sanitizeNumericInput(e.target.value) }))} inputProps={{ inputMode: 'numeric' }} />
+                            <TextField size="small" type="text" sx={voucherFieldSx} label="Minimal Belanja" value={editingVoucher?.min_order_amount ?? ''} onChange={(e) => setEditingVoucher((p) => ({ ...p, min_order_amount: sanitizeNumericInput(e.target.value) }))} inputProps={{ inputMode: 'numeric' }} />
+                        </Box>
+
+                        <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', sm: '1fr 1fr 1fr' }, gap: 1, mb: 0.5 }}>
+                            <TextField size="small" type="text" sx={voucherFieldSx} label="Minimal Diskon" value={editingVoucher?.min_discount_amount ?? ''} onChange={(e) => setEditingVoucher((p) => ({ ...p, min_discount_amount: sanitizeNumericInput(e.target.value) }))} inputProps={{ inputMode: 'numeric' }} />
+                            <TextField size="small" type="text" sx={voucherFieldSx} label="Maksimal Diskon (0=tanpa batas)" value={editingVoucher?.max_discount_amount ?? ''} onChange={(e) => setEditingVoucher((p) => ({ ...p, max_discount_amount: sanitizeNumericInput(e.target.value) }))} inputProps={{ inputMode: 'numeric' }} />
+                            <TextField size="small" type="text" sx={voucherFieldSx} label="Kuota Pakai (0=unlimited)" value={editingVoucher?.usage_limit ?? ''} onChange={(e) => setEditingVoucher((p) => ({ ...p, usage_limit: sanitizeNumericInput(e.target.value) }))} inputProps={{ inputMode: 'numeric' }} />
+                        </Box>
+
+                        <FormControlLabel
+                            sx={{ m: 0, mb: 0.5 }}
+                            control={<Switch checked={String(editingVoucher?.usage_scope || 'global') === 'per_user'} onChange={(e) => setEditingVoucher((p) => ({ ...p, usage_scope: e.target.checked ? 'per_user' : 'global' }))} size="small" />}
+                            label={String(editingVoucher?.usage_scope || 'global') === 'per_user' ? 'Kuota dihitung per user' : 'Kuota dihitung kumulatif keseluruhan'}
+                        />
+
+                        <FormControlLabel
+                            sx={{ m: 0 }}
+                            control={<Switch checked={!!editingVoucher?.is_active} onChange={(e) => setEditingVoucher((p) => ({ ...p, is_active: e.target.checked }))} size="small" />}
+                            label={editingVoucher?.is_active ? 'Status: Aktif' : 'Status: Nonaktif'}
+                        />
+
+                        <TextField
+                            size="small"
+                            sx={voucherFieldSx}
+                            label="Deskripsi"
+                            value={editingVoucher?.description || ''}
+                            onChange={(e) => setEditingVoucher((p) => ({ ...p, description: e.target.value }))}
+                        />
+                    </Box>
+                </DialogContent>
+                <DialogActions sx={{ px: 3, pb: 2.5 }}>
+                    <Button variant="outlined" onClick={() => setEditingVoucher(null)} sx={{ textTransform: 'none' }}>
+                        Batal
+                    </Button>
+                    <Button
+                        variant="contained"
+                        onClick={() => updateVoucher(editingVoucher)}
+                        disabled={loading || !editingVoucher?.id}
+                        sx={{ textTransform: 'none', fontWeight: 700 }}
+                    >
+                        Simpan Perubahan
+                    </Button>
+                </DialogActions>
+            </Dialog>
+
+            <Dialog open={!!voucherDeleteTarget} onClose={() => setVoucherDeleteTarget(null)} maxWidth="xs" fullWidth>
+                <DialogTitle sx={{ fontWeight: 800 }}>Hapus Voucher</DialogTitle>
+                <DialogContent>
+                    <Typography variant="body2" color="text.secondary">
+                        Yakin ingin menghapus voucher <strong>{voucherDeleteTarget?.code || '-'}</strong>?
+                    </Typography>
+                </DialogContent>
+                <DialogActions sx={{ px: 3, pb: 2.5 }}>
+                    <Button variant="outlined" onClick={() => setVoucherDeleteTarget(null)} sx={{ textTransform: 'none' }}>
+                        Batal
+                    </Button>
+                    <Button
+                        variant="contained"
+                        color="error"
+                        onClick={() => voucherDeleteTarget?.id && deleteVoucher(voucherDeleteTarget.id)}
+                        sx={{ textTransform: 'none', fontWeight: 700 }}
+                    >
+                        Hapus
                     </Button>
                 </DialogActions>
             </Dialog>

@@ -50,7 +50,7 @@ export default function Navigator(props) {
                     path: '/informasi',
                 },
                 {
-                    id: 'Unggahan Pengguna',
+                    id: 'Diskusi Pengguna',
                     icon: <ForumIcon />,
                     path: '/unggahan',
                 },
@@ -102,7 +102,7 @@ export default function Navigator(props) {
             <List size="sm" sx={{ '--ListItem-radius': '8px', '--List-gap': '4px', p: 0 }}>
                 {categories.map(({ id, children }) => (
                     <ListItem key={id} nested sx={{ mt: id === categories[0].id ? 0 : 1.5 }}>
-                        <ListSubheader sx={{ letterSpacing: '2px', fontWeight: '800' }}>
+                        <ListSubheader sx={{ letterSpacing: 'normal', fontWeight: '800' }}>
                             {id}
                         </ListSubheader>
                         <List sx={{ '& .JoyListItemButton-root': { p: '8px' } }}>

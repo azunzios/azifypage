@@ -22,6 +22,7 @@ import (
 	"net/smtp"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -156,8 +157,10 @@ func main() {
 
 	// PikPak API Endpoints (protected)
 	http.HandleFunc("/api/files", auth.RequireAuth(handleListFiles))
+	http.HandleFunc("/api/file", auth.RequireAuth(handleFileOps))
 	http.HandleFunc("/api/file/link", auth.RequireAuth(handleGetDownloadLink))
-	http.HandleFunc("/api/folder/download", auth.RequireAuth(handleDownloadFolder))
+	http.HandleFunc("/api/file/download", auth.RequireAuth(handleDirectFileDownload))
+	http.HandleFunc("/api/folder/manifest", auth.RequireAuth(handleFolderManifest))
 	http.HandleFunc("/api/task", auth.RequireAuth(handleAddOfflineTask))
 
 	// User & Database API Endpoints (protected)
@@ -168,11 +171,13 @@ func main() {
 	http.HandleFunc("/api/topups", auth.RequireAuth(handleTopUps))
 	http.HandleFunc("/api/hosts", handleGetHosts)     // Public
 	http.HandleFunc("/api/pricing", handleGetPricing) // Public
+	http.HandleFunc("/api/voucher/preview", auth.RequireAuth(handleVoucherPreview))
 	http.HandleFunc("/api/premium/request", auth.RequireAuth(handlePremiumRequest))
 
 	// Admin Endpoints (protected by admin role)
 	http.HandleFunc("/api/admin/users", auth.RequireAdmin(handleAdminUsers))
 	http.HandleFunc("/api/admin/pricing", auth.RequireAdmin(handleAdminPricing))
+	http.HandleFunc("/api/admin/vouchers", auth.RequireAdmin(handleAdminVouchers))
 	http.HandleFunc("/api/admin/stats", auth.RequireAdmin(handleAdminStats))
 	http.HandleFunc("/api/admin/monitoring", auth.RequireAdmin(handleAdminMonitoring))
 	http.HandleFunc("/api/admin/user/balance", auth.RequireAdmin(handleAdminUserBalance))
@@ -918,6 +923,57 @@ func handleNotifications(w http.ResponseWriter, r *http.Request) {
 func handleTransactions(w http.ResponseWriter, r *http.Request) {
 	session := auth.GetSessionFromRequest(r)
 
+	pageRaw := strings.TrimSpace(r.URL.Query().Get("page"))
+	pageSizeRaw := strings.TrimSpace(r.URL.Query().Get("page_size"))
+	usePagination := pageRaw != "" || pageSizeRaw != ""
+
+	if usePagination {
+		page := 1
+		if v, err := strconv.Atoi(pageRaw); err == nil && v > 0 {
+			page = v
+		}
+
+		pageSize := 10
+		if v, err := strconv.Atoi(pageSizeRaw); err == nil {
+			if v < 1 {
+				v = 1
+			}
+			if v > 25 {
+				v = 25
+			}
+			pageSize = v
+		}
+
+		var total int64
+		database.DB.Model(&database.Transaction{}).Where("user_id = ?", session.UserID).Count(&total)
+
+		totalPages := int((total + int64(pageSize) - 1) / int64(pageSize))
+		if totalPages == 0 {
+			totalPages = 1
+		}
+		if page > totalPages {
+			page = totalPages
+		}
+
+		offset := (page - 1) * pageSize
+		var items []database.Transaction
+		database.DB.Where("user_id = ?", session.UserID).
+			Order("created_at desc").
+			Limit(pageSize).
+			Offset(offset).
+			Find(&items)
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"items":       items,
+			"page":        page,
+			"page_size":   pageSize,
+			"total":       total,
+			"total_pages": totalPages,
+		})
+		return
+	}
+
 	var transactions []database.Transaction
 	database.DB.Where("user_id = ?", session.UserID).Order("created_at desc").Limit(50).Find(&transactions)
 
@@ -1042,6 +1098,57 @@ func handleTopUps(w http.ResponseWriter, r *http.Request) {
 
 	switch r.Method {
 	case http.MethodGet:
+		pageRaw := strings.TrimSpace(r.URL.Query().Get("page"))
+		pageSizeRaw := strings.TrimSpace(r.URL.Query().Get("page_size"))
+		usePagination := pageRaw != "" || pageSizeRaw != ""
+
+		if usePagination {
+			page := 1
+			if v, err := strconv.Atoi(pageRaw); err == nil && v > 0 {
+				page = v
+			}
+
+			pageSize := 10
+			if v, err := strconv.Atoi(pageSizeRaw); err == nil {
+				if v < 1 {
+					v = 1
+				}
+				if v > 25 {
+					v = 25
+				}
+				pageSize = v
+			}
+
+			var total int64
+			database.DB.Model(&database.TopUpRequest{}).Where("user_id = ?", session.UserID).Count(&total)
+
+			totalPages := int((total + int64(pageSize) - 1) / int64(pageSize))
+			if totalPages == 0 {
+				totalPages = 1
+			}
+			if page > totalPages {
+				page = totalPages
+			}
+
+			offset := (page - 1) * pageSize
+			var items []database.TopUpRequest
+			database.DB.Where("user_id = ?", session.UserID).
+				Order("created_at desc").
+				Limit(pageSize).
+				Offset(offset).
+				Find(&items)
+
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{
+				"items":       items,
+				"page":        page,
+				"page_size":   pageSize,
+				"total":       total,
+				"total_pages": totalPages,
+			})
+			return
+		}
+
 		var reqs []database.TopUpRequest
 		database.DB.Where("user_id = ?", session.UserID).Order("created_at desc").Limit(50).Find(&reqs)
 		w.Header().Set("Content-Type", "application/json")
@@ -1749,6 +1856,118 @@ func mapRealDebridError(err error) (status int, message string) {
 	return http.StatusBadRequest, "Gagal memproses link host premium"
 }
 
+type voucherApplyResult struct {
+	Code     string
+	Discount int64
+	Final    int64
+}
+
+func computeVoucherDiscount(v database.Voucher, basePrice int64) int64 {
+	if basePrice <= 0 {
+		return 0
+	}
+
+	var discount int64
+	switch strings.ToLower(strings.TrimSpace(v.DiscountType)) {
+	case "fixed":
+		discount = v.DiscountValue
+	default:
+		discount = (basePrice * v.DiscountValue) / 100
+	}
+
+	if discount < 0 {
+		discount = 0
+	}
+	if v.MinDiscountAmount > 0 && discount < v.MinDiscountAmount {
+		discount = v.MinDiscountAmount
+	}
+	if v.MaxDiscountAmount > 0 && discount > v.MaxDiscountAmount {
+		discount = v.MaxDiscountAmount
+	}
+	if discount > basePrice {
+		discount = basePrice
+	}
+
+	return discount
+}
+
+func applyVoucherInTx(tx *gorm.DB, rawCode string, serviceType string, basePrice int64, userID uint) (*voucherApplyResult, error) {
+	code := strings.ToUpper(strings.TrimSpace(rawCode))
+	if code == "" {
+		return &voucherApplyResult{Code: "", Discount: 0, Final: basePrice}, nil
+	}
+
+	var v database.Voucher
+	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("UPPER(code) = ?", code).First(&v).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, fmt.Errorf("voucher_not_found")
+		}
+		return nil, err
+	}
+
+	if !v.IsActive {
+		return nil, fmt.Errorf("voucher_inactive")
+	}
+	appliesTo := strings.ToLower(strings.TrimSpace(v.AppliesTo))
+	if appliesTo != "" && appliesTo != "all" && appliesTo != strings.ToLower(serviceType) {
+		return nil, fmt.Errorf("voucher_not_applicable")
+	}
+	now := time.Now()
+	if v.StartsAt != nil && now.Before(*v.StartsAt) {
+		return nil, fmt.Errorf("voucher_not_started")
+	}
+	if v.EndsAt != nil && now.After(*v.EndsAt) {
+		return nil, fmt.Errorf("voucher_expired")
+	}
+
+	usageScope := strings.ToLower(strings.TrimSpace(v.UsageScope))
+	if usageScope == "" {
+		usageScope = "global"
+	}
+
+	if v.UsageLimit > 0 {
+		if usageScope == "per_user" {
+			var userUsageCount int64
+			if err := tx.Model(&database.VoucherUsage{}).
+				Where("voucher_id = ? AND user_id = ?", v.ID, userID).
+				Count(&userUsageCount).Error; err != nil {
+				return nil, err
+			}
+			if int(userUsageCount) >= v.UsageLimit {
+				return nil, fmt.Errorf("voucher_limit_reached")
+			}
+		} else {
+			if v.UsedCount >= v.UsageLimit {
+				return nil, fmt.Errorf("voucher_limit_reached")
+			}
+		}
+	}
+	if v.MinOrderAmount > 0 && basePrice < v.MinOrderAmount {
+		return nil, fmt.Errorf("voucher_min_order")
+	}
+
+	discount := computeVoucherDiscount(v, basePrice)
+	finalPrice := basePrice - discount
+	if finalPrice < 0 {
+		finalPrice = 0
+	}
+
+	if err := tx.Model(&database.Voucher{}).
+		Where("id = ?", v.ID).
+		Update("used_count", gorm.Expr("used_count + 1")).Error; err != nil {
+		return nil, err
+	}
+
+	if err := tx.Create(&database.VoucherUsage{
+		VoucherID: v.ID,
+		UserID:    userID,
+	}).Error; err != nil {
+		return nil, err
+	}
+
+	return &voucherApplyResult{Code: v.Code, Discount: discount, Final: finalPrice}, nil
+}
+
 func handlePremiumRequest(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet {
 		session := auth.GetSessionFromRequest(r)
@@ -1802,6 +2021,61 @@ func handlePremiumRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if r.Method == http.MethodDelete {
+		session := auth.GetSessionFromRequest(r)
+		idRaw := strings.TrimSpace(r.URL.Query().Get("id"))
+		allRaw := strings.TrimSpace(r.URL.Query().Get("all"))
+
+		if allRaw == "1" || strings.EqualFold(allRaw, "true") {
+			if err := database.DB.Where("user_id = ?", session.UserID).Delete(&database.PremiumRequest{}).Error; err != nil {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusInternalServerError)
+				json.NewEncoder(w).Encode(map[string]any{
+					"message": "Gagal menghapus riwayat host premium",
+					"error":   err.Error(),
+				})
+				return
+			}
+
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{
+				"message": "Riwayat host premium berhasil dihapus",
+			})
+			return
+		}
+
+		id, err := strconv.Atoi(idRaw)
+		if err != nil || id <= 0 {
+			http.Error(w, "id atau all wajib diisi", http.StatusBadRequest)
+			return
+		}
+
+		res := database.DB.Where("id = ? AND user_id = ?", id, session.UserID).Delete(&database.PremiumRequest{})
+		if res.Error != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]any{
+				"message": "Gagal menghapus item riwayat",
+				"error":   res.Error.Error(),
+			})
+			return
+		}
+		if res.RowsAffected == 0 {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusNotFound)
+			json.NewEncoder(w).Encode(map[string]any{
+				"message": "Data riwayat tidak ditemukan",
+			})
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"message": "Item riwayat berhasil dihapus",
+		})
+		return
+	}
+
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -1810,13 +2084,19 @@ func handlePremiumRequest(w http.ResponseWriter, r *http.Request) {
 	session := auth.GetSessionFromRequest(r)
 
 	var req struct {
-		URL string `json:"url"`
+		URL             string  `json:"url"`
+		Voucher         string  `json:"voucher"`
+		EstimatedSizeGB float64 `json:"estimated_size_gb"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "Invalid request", http.StatusBadRequest)
 		return
 	}
 	req.URL = strings.TrimSpace(req.URL)
+	req.Voucher = strings.TrimSpace(req.Voucher)
+	if req.EstimatedSizeGB < 0 {
+		req.EstimatedSizeGB = 0
+	}
 	if req.URL == "" {
 		http.Error(w, "URL wajib diisi", http.StatusBadRequest)
 		return
@@ -1868,6 +2148,9 @@ func handlePremiumRequest(w http.ResponseWriter, r *http.Request) {
 		if fileSize < 0 {
 			fileSize = 0
 		}
+		if fileSize <= 0 && req.EstimatedSizeGB > 0 {
+			fileSize = int64(req.EstimatedSizeGB * 1024 * 1024 * 1024)
+		}
 		price, chargedUnits, chargedGB := priceCfg.CalculatePrice(fileSize)
 		if price <= 0 {
 			price = priceCfg.PricePerUnit
@@ -1875,58 +2158,63 @@ func handlePremiumRequest(w http.ResponseWriter, r *http.Request) {
 			chargedGB = priceCfg.UnitSizeGB
 		}
 
-		unrestricted, err := rdClient.UnrestrictLink(req.URL)
-		if err != nil {
-			status, friendly := mapRealDebridError(err)
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(status)
-			json.NewEncoder(w).Encode(map[string]any{
-				"message": friendly,
-				"error":   err.Error(),
-			})
-			return
-		}
-
-		fileSize = unrestricted.Filesize
-		if fileSize <= 0 {
-			fileSize = checkInfo.Filesize
-		}
-		price, chargedUnits, chargedGB = priceCfg.CalculatePrice(fileSize)
-		if price <= 0 {
-			price = priceCfg.PricePerUnit
-			chargedUnits = 1
-			chargedGB = priceCfg.UnitSizeGB
-		}
-
+		var unrestricted realdebrid.UnrestrictedLinkResult
 		streamURL := ""
-		if unrestricted.ID != "" {
-			if s, streamErr := rdClient.GetStreamingLink(unrestricted.ID); streamErr == nil {
-				streamURL = strings.TrimSpace(s)
-			} else {
-				log.Printf("realdebrid streaming link skipped: %v", streamErr)
-			}
-		}
 		sizeGB := "0 GB"
-		if fileSize > 0 {
-			sizeGB = fmt.Sprintf("%.2f GB", float64(fileSize)/float64(1024*1024*1024))
-		}
 
 		var savedReq database.PremiumRequest
+		voucherApplied := ""
+		voucherDiscount := int64(0)
+		finalPrice := price
 		var currentBalance int64
 		txErr := database.DB.Transaction(func(tx *gorm.DB) error {
+			if strings.TrimSpace(req.Voucher) != "" {
+				voucherResult, vErr := applyVoucherInTx(tx, req.Voucher, "premium", price, session.UserID)
+				if vErr != nil {
+					return vErr
+				}
+				voucherApplied = voucherResult.Code
+				voucherDiscount = voucherResult.Discount
+				finalPrice = voucherResult.Final
+			}
+
 			var user database.User
 			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&user, session.UserID).Error; err != nil {
 				return err
 			}
-			if user.Balance < price {
+			if user.Balance < finalPrice {
 				currentBalance = user.Balance
 				return fmt.Errorf("insufficient_balance")
 			}
 
-			user.Balance -= price
+			user.Balance -= finalPrice
 			currentBalance = user.Balance
 			if err := tx.Model(&database.User{}).Where("id = ?", user.ID).Update("balance", user.Balance).Error; err != nil {
 				return err
+			}
+
+			unrestricted, err = rdClient.UnrestrictLink(req.URL)
+			if err != nil {
+				return fmt.Errorf("unrestrict_failed: %w", err)
+			}
+
+			fileSize = unrestricted.Filesize
+			if fileSize <= 0 {
+				fileSize = checkInfo.Filesize
+			}
+			if fileSize <= 0 && req.EstimatedSizeGB > 0 {
+				fileSize = int64(req.EstimatedSizeGB * 1024 * 1024 * 1024)
+			}
+			if fileSize > 0 {
+				sizeGB = fmt.Sprintf("%.2f GB", float64(fileSize)/float64(1024*1024*1024))
+			}
+
+			if unrestricted.ID != "" {
+				if s, streamErr := rdClient.GetStreamingLink(unrestricted.ID); streamErr == nil {
+					streamURL = strings.TrimSpace(s)
+				} else {
+					log.Printf("realdebrid streaming link skipped: %v", streamErr)
+				}
 			}
 
 			savedReq = database.PremiumRequest{
@@ -1935,7 +2223,7 @@ func handlePremiumRequest(w http.ResponseWriter, r *http.Request) {
 				Filename:  unrestricted.Filename,
 				Host:      unrestricted.Host,
 				SizeBytes: fileSize,
-				Price:     price,
+				Price:     finalPrice,
 				Status:    "done",
 				ResultURL: unrestricted.Download,
 				StreamURL: streamURL,
@@ -1946,9 +2234,14 @@ func handlePremiumRequest(w http.ResponseWriter, r *http.Request) {
 
 			if err := tx.Create(&database.Transaction{
 				UserID:      session.UserID,
-				Amount:      -price,
+				Amount:      -finalPrice,
 				Type:        "download",
-				Description: fmt.Sprintf("Premium Host: %s (%d GB) - Rp %d", unrestricted.Filename, chargedGB, price),
+				Description: func() string {
+					if voucherApplied != "" && voucherDiscount > 0 {
+						return fmt.Sprintf("Premium Host: %s (%d GB) - Rp %d (Voucher %s -Rp %d)", unrestricted.Filename, chargedGB, finalPrice, voucherApplied, voucherDiscount)
+					}
+					return fmt.Sprintf("Premium Host: %s (%d GB) - Rp %d", unrestricted.Filename, chargedGB, finalPrice)
+				}(),
 			}).Error; err != nil {
 				return err
 			}
@@ -1961,7 +2254,10 @@ func handlePremiumRequest(w http.ResponseWriter, r *http.Request) {
 				return err
 			}
 
-			notifMsg := fmt.Sprintf("Link premium siap diunduh. %s (%s). Biaya: Rp %d.", unrestricted.Filename, sizeGB, price)
+			notifMsg := fmt.Sprintf("Link premium siap diunduh. %s (%s). Biaya: Rp %d.", unrestricted.Filename, sizeGB, finalPrice)
+			if voucherApplied != "" && voucherDiscount > 0 {
+				notifMsg += fmt.Sprintf(" Voucher %s dipakai (-Rp %d).", voucherApplied, voucherDiscount)
+			}
 			if streamURL != "" {
 				notifMsg += " Tersedia juga link streaming."
 			}
@@ -1976,19 +2272,61 @@ func handlePremiumRequest(w http.ResponseWriter, r *http.Request) {
 			return nil
 		})
 		if txErr != nil {
+			errLower := strings.ToLower(txErr.Error())
+			if strings.Contains(errLower, "unrestrict_failed:") {
+				errMsg := txErr.Error()
+				if idx := strings.Index(errMsg, ":"); idx >= 0 && idx+1 < len(errMsg) {
+					errMsg = strings.TrimSpace(errMsg[idx+1:])
+				}
+				status, friendly := mapRealDebridError(errors.New(errMsg))
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(status)
+				json.NewEncoder(w).Encode(map[string]any{
+					"message": friendly,
+					"error":   errMsg,
+				})
+				return
+			}
+			if strings.Contains(errLower, "voucher_") {
+				friendly := "Voucher tidak valid"
+				switch {
+				case strings.Contains(errLower, "voucher_not_found"):
+					friendly = "Kode voucher tidak ditemukan"
+				case strings.Contains(errLower, "voucher_inactive"):
+					friendly = "Voucher sedang tidak aktif"
+				case strings.Contains(errLower, "voucher_not_applicable"):
+					friendly = "Voucher tidak berlaku untuk layanan ini"
+				case strings.Contains(errLower, "voucher_not_started"):
+					friendly = "Voucher belum mulai berlaku"
+				case strings.Contains(errLower, "voucher_expired"):
+					friendly = "Voucher sudah kedaluwarsa"
+				case strings.Contains(errLower, "voucher_limit_reached"):
+					friendly = "Kuota voucher sudah habis"
+				case strings.Contains(errLower, "voucher_min_order"):
+					friendly = "Nominal belum memenuhi syarat minimal voucher"
+				}
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusBadRequest)
+				json.NewEncoder(w).Encode(map[string]any{
+					"message": friendly,
+					"error":   txErr.Error(),
+				})
+				return
+			}
+
 			if strings.Contains(strings.ToLower(txErr.Error()), "insufficient_balance") {
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusPaymentRequired)
 				json.NewEncoder(w).Encode(map[string]any{
 					"message":         "Saldo tidak mencukupi untuk URL premium ini",
-					"required_price":  price,
+					"required_price":  finalPrice,
+					"original_price":  price,
+					"discount_amount": voucherDiscount,
+					"voucher_code":    voucherApplied,
 					"required_units":  chargedUnits,
 					"required_gb":     chargedGB,
 					"current_balance": currentBalance,
-					"filename":        unrestricted.Filename,
-					"size_bytes":      fileSize,
-					"size_gb":         sizeGB,
-					"host":            unrestricted.Host,
+					"size_gb":         fmt.Sprintf("%d GB", chargedGB),
 				})
 				return
 			}
@@ -2010,7 +2348,10 @@ func handlePremiumRequest(w http.ResponseWriter, r *http.Request) {
 			"host":          unrestricted.Host,
 			"size_bytes":    fileSize,
 			"size_gb":       sizeGB,
-			"price":         price,
+			"price":         finalPrice,
+			"original_price": price,
+			"discount_amount": voucherDiscount,
+			"voucher_code":   voucherApplied,
 			"charged_units": chargedUnits,
 			"charged_gb":    chargedGB,
 			"current_balance_after": currentBalance,
@@ -2112,6 +2453,84 @@ func handleGetDownloadLink(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(response)
 }
 
+func handleDirectFileDownload(w http.ResponseWriter, r *http.Request) {
+	fileID := strings.TrimSpace(r.URL.Query().Get("file_id"))
+	if fileID == "" {
+		http.Error(w, "file_id is required", http.StatusBadRequest)
+		return
+	}
+
+	fileName := strings.TrimSpace(r.URL.Query().Get("file_name"))
+	if fileName == "" {
+		fileName = "download"
+	}
+
+	link, err := globalClient.GetDownloadUrl(fileID)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Failed to get link: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	upReq, err := http.NewRequest(http.MethodGet, link, nil)
+	if err != nil {
+		http.Error(w, "Failed to create upstream request", http.StatusInternalServerError)
+		return
+	}
+
+	upResp, err := http.DefaultClient.Do(upReq)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Failed to fetch file: %v", err), http.StatusBadGateway)
+		return
+	}
+	defer upResp.Body.Close()
+
+	if upResp.StatusCode < 200 || upResp.StatusCode >= 300 {
+		body, _ := io.ReadAll(io.LimitReader(upResp.Body, 4096))
+		http.Error(w, fmt.Sprintf("Upstream download failed: status %d, body: %s", upResp.StatusCode, string(body)), http.StatusBadGateway)
+		return
+	}
+
+	contentType := upResp.Header.Get("Content-Type")
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+	w.Header().Set("Content-Type", contentType)
+	if cl := upResp.Header.Get("Content-Length"); cl != "" {
+		w.Header().Set("Content-Length", cl)
+	}
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename*=UTF-8''%s", url.QueryEscape(fileName)))
+
+	if _, err := io.Copy(w, upResp.Body); err != nil {
+		return
+	}
+}
+
+func handleFileOps(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodDelete {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	fileID := strings.TrimSpace(r.URL.Query().Get("file_id"))
+	if fileID == "" {
+		http.Error(w, "file_id is required", http.StatusBadRequest)
+		return
+	}
+
+	if err := globalClient.DeleteFile(fileID); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]any{
+			"message": "Gagal menghapus file",
+			"error":   err.Error(),
+		})
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"message": "File berhasil dihapus"})
+}
+
 func handleAddOfflineTask(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodDelete {
 		handleDeleteTask(w, r)
@@ -2124,7 +2543,8 @@ func handleAddOfflineTask(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		URL string `json:"url"`
+		URL     string `json:"url"`
+		Voucher string `json:"voucher"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -2132,6 +2552,8 @@ func handleAddOfflineTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	req.URL = strings.TrimSpace(req.URL)
+	req.Voucher = strings.TrimSpace(req.Voucher)
 	if req.URL == "" {
 		http.Error(w, "url is required", http.StatusBadRequest)
 		return
@@ -2190,11 +2612,9 @@ func handleAddOfflineTask(w http.ResponseWriter, r *http.Request) {
 	pricing, err := database.GetPricing("torrent")
 	var price int64
 	var chargedUnits, chargedGB int
-	var priceDisplay string
 
 	if err == nil {
 		price, chargedUnits, chargedGB = pricing.CalculatePrice(sizeBytes)
-		priceDisplay = fmt.Sprintf("Rp %d", price)
 	} else {
 		// Fallback to default pricing
 		sizeGB := float64(sizeBytes) / (1024 * 1024 * 1024)
@@ -2206,7 +2626,6 @@ func handleAddOfflineTask(w http.ResponseWriter, r *http.Request) {
 			chargedGB = 1
 		}
 		price = int64(chargedGB * 650)
-		priceDisplay = fmt.Sprintf("Rp %d", price)
 	}
 	if price <= 0 {
 		if err == nil && pricing.PricePerUnit > 0 {
@@ -2221,22 +2640,34 @@ func handleAddOfflineTask(w http.ResponseWriter, r *http.Request) {
 			chargedUnits = 1
 			chargedGB = 1
 		}
-		priceDisplay = fmt.Sprintf("Rp %d", price)
 	}
 
 	sizeGB := float64(sizeBytes) / (1024 * 1024 * 1024)
+	voucherApplied := ""
+	voucherDiscount := int64(0)
+	finalPrice := price
 	var currentBalance int64
 	txErr := database.DB.Transaction(func(tx *gorm.DB) error {
+		if strings.TrimSpace(req.Voucher) != "" {
+			voucherResult, vErr := applyVoucherInTx(tx, req.Voucher, "torrent", price, session.UserID)
+			if vErr != nil {
+				return vErr
+			}
+			voucherApplied = voucherResult.Code
+			voucherDiscount = voucherResult.Discount
+			finalPrice = voucherResult.Final
+		}
+
 		var user database.User
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&user, session.UserID).Error; err != nil {
 			return err
 		}
-		if user.Balance < price {
+		if user.Balance < finalPrice {
 			currentBalance = user.Balance
 			return fmt.Errorf("insufficient_balance")
 		}
 
-		user.Balance -= price
+		user.Balance -= finalPrice
 		currentBalance = user.Balance
 		if err := tx.Model(&database.User{}).Where("id = ?", user.ID).Update("balance", user.Balance).Error; err != nil {
 			return err
@@ -2244,9 +2675,14 @@ func handleAddOfflineTask(w http.ResponseWriter, r *http.Request) {
 
 		if err := tx.Create(&database.Transaction{
 			UserID:      session.UserID,
-			Amount:      -price,
+			Amount:      -finalPrice,
 			Type:        "download",
-			Description: fmt.Sprintf("Torrent/Magnet: %s (%d GB) - Rp %d", name, chargedGB, price),
+			Description: func() string {
+				if voucherApplied != "" && voucherDiscount > 0 {
+					return fmt.Sprintf("Torrent/Magnet: %s (%d GB) - Rp %d (Voucher %s -Rp %d)", name, chargedGB, finalPrice, voucherApplied, voucherDiscount)
+				}
+				return fmt.Sprintf("Torrent/Magnet: %s (%d GB) - Rp %d", name, chargedGB, finalPrice)
+			}(),
 		}).Error; err != nil {
 			return err
 		}
@@ -2262,7 +2698,13 @@ func handleAddOfflineTask(w http.ResponseWriter, r *http.Request) {
 		if err := tx.Create(&database.Notification{
 			UserID:  session.UserID,
 			Title:   "Unduhan torrent diproses",
-			Message: fmt.Sprintf("Unduhan %s diterima. Biaya: Rp %d.", name, price),
+			Message: func() string {
+				msg := fmt.Sprintf("Unduhan %s diterima. Biaya: Rp %d.", name, finalPrice)
+				if voucherApplied != "" && voucherDiscount > 0 {
+					msg += fmt.Sprintf(" Voucher %s dipakai (-Rp %d).", voucherApplied, voucherDiscount)
+				}
+				return msg
+			}(),
 		}).Error; err != nil {
 			return err
 		}
@@ -2270,12 +2712,49 @@ func handleAddOfflineTask(w http.ResponseWriter, r *http.Request) {
 		return nil
 	})
 	if txErr != nil {
+		if strings.TrimSpace(id) != "" {
+			if delErr := globalClient.DeleteTasks([]string{id}); delErr != nil {
+				log.Printf("cleanup task gagal (id=%s): %v", id, delErr)
+			}
+		}
+
+		errLower := strings.ToLower(txErr.Error())
+		if strings.Contains(errLower, "voucher_") {
+			friendly := "Voucher tidak valid"
+			switch {
+			case strings.Contains(errLower, "voucher_not_found"):
+				friendly = "Kode voucher tidak ditemukan"
+			case strings.Contains(errLower, "voucher_inactive"):
+				friendly = "Voucher sedang tidak aktif"
+			case strings.Contains(errLower, "voucher_not_applicable"):
+				friendly = "Voucher tidak berlaku untuk layanan ini"
+			case strings.Contains(errLower, "voucher_not_started"):
+				friendly = "Voucher belum mulai berlaku"
+			case strings.Contains(errLower, "voucher_expired"):
+				friendly = "Voucher sudah kedaluwarsa"
+			case strings.Contains(errLower, "voucher_limit_reached"):
+				friendly = "Kuota voucher sudah habis"
+			case strings.Contains(errLower, "voucher_min_order"):
+				friendly = "Nominal belum memenuhi syarat minimal voucher"
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]any{
+				"message": friendly,
+				"error":   txErr.Error(),
+			})
+			return
+		}
+
 		if strings.Contains(strings.ToLower(txErr.Error()), "insufficient_balance") {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusPaymentRequired)
 			json.NewEncoder(w).Encode(map[string]any{
 				"message":         "Saldo tidak mencukupi untuk torrent ini",
-				"required_price":  price,
+				"required_price":  finalPrice,
+				"original_price":  price,
+				"discount_amount": voucherDiscount,
+				"voucher_code":    voucherApplied,
 				"required_units":  chargedUnits,
 				"required_gb":     chargedGB,
 				"current_balance": currentBalance,
@@ -2302,8 +2781,11 @@ func handleAddOfflineTask(w http.ResponseWriter, r *http.Request) {
 		"size_gb":       fmt.Sprintf("%.2f GB", sizeGB),
 		"charged_gb":    chargedGB,
 		"charged_units": chargedUnits,
-		"price":         price,
-		"price_display": priceDisplay,
+		"price":         finalPrice,
+		"original_price": price,
+		"discount_amount": voucherDiscount,
+		"voucher_code":   voucherApplied,
+		"price_display": fmt.Sprintf("Rp %d", finalPrice),
 		"current_balance_after": currentBalance,
 		"cached":        isCached,
 		"estimation":    estimation,
@@ -2327,6 +2809,148 @@ func handleGetPricing(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(pricings)
 }
 
+func handleVoucherPreview(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	code := strings.ToUpper(strings.TrimSpace(r.URL.Query().Get("code")))
+	serviceType := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("service_type")))
+	basePrice, _ := strconv.ParseInt(strings.TrimSpace(r.URL.Query().Get("base_price")), 10, 64)
+	if basePrice < 0 {
+		basePrice = 0
+	}
+
+	resp := map[string]any{
+		"valid":            false,
+		"code":             code,
+		"service_type":     serviceType,
+		"estimated_base":   basePrice,
+		"estimated_discount": int64(0),
+		"estimated_final":  basePrice,
+	}
+
+	session := auth.GetSessionFromRequest(r)
+
+	if code == "" {
+		resp["message"] = "Masukkan kode voucher"
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+		return
+	}
+
+	if serviceType != "torrent" && serviceType != "premium" {
+		resp["message"] = "Layanan tidak valid"
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+		return
+	}
+
+	var v database.Voucher
+	if err := database.DB.Where("UPPER(code) = ?", code).First(&v).Error; err != nil {
+		resp["message"] = "Voucher tidak ditemukan"
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+		return
+	}
+
+	resp["name"] = v.Name
+	resp["description"] = v.Description
+	resp["discount_type"] = v.DiscountType
+	resp["discount_value"] = v.DiscountValue
+	resp["applies_to"] = v.AppliesTo
+	resp["usage_scope"] = v.UsageScope
+	resp["min_order_amount"] = v.MinOrderAmount
+	resp["min_discount_amount"] = v.MinDiscountAmount
+	resp["max_discount_amount"] = v.MaxDiscountAmount
+	resp["usage_limit"] = v.UsageLimit
+	resp["used_count"] = v.UsedCount
+
+	if !v.IsActive {
+		resp["message"] = "Voucher tidak aktif"
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+		return
+	}
+
+	now := time.Now()
+	if v.StartsAt != nil && now.Before(*v.StartsAt) {
+		resp["message"] = "Voucher belum mulai berlaku"
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+		return
+	}
+	if v.EndsAt != nil && now.After(*v.EndsAt) {
+		resp["message"] = "Voucher sudah kedaluwarsa"
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+		return
+	}
+
+	appliesTo := strings.ToLower(strings.TrimSpace(v.AppliesTo))
+	if appliesTo != "" && appliesTo != "all" && appliesTo != serviceType {
+		resp["message"] = "Voucher tidak berlaku untuk layanan ini"
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+		return
+	}
+
+	usageScope := strings.ToLower(strings.TrimSpace(v.UsageScope))
+	if usageScope == "" {
+		usageScope = "global"
+	}
+
+	if v.UsageLimit > 0 {
+		if usageScope == "per_user" {
+			var userUsageCount int64
+			if err := database.DB.Model(&database.VoucherUsage{}).
+				Where("voucher_id = ? AND user_id = ?", v.ID, session.UserID).
+				Count(&userUsageCount).Error; err != nil {
+				resp["message"] = "Gagal cek kuota voucher"
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(resp)
+				return
+			}
+			resp["user_used_count"] = userUsageCount
+			if int(userUsageCount) >= v.UsageLimit {
+				resp["message"] = "Kuota voucher per user habis"
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(resp)
+				return
+			}
+		} else {
+			if v.UsedCount >= v.UsageLimit {
+				resp["message"] = "Kuota voucher habis"
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(resp)
+				return
+			}
+		}
+	}
+
+	if basePrice < v.MinOrderAmount {
+		resp["message"] = "Belum memenuhi minimal transaksi"
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+		return
+	}
+
+	discount := computeVoucherDiscount(v, basePrice)
+	finalPrice := basePrice - discount
+	if finalPrice < 0 {
+		finalPrice = 0
+	}
+
+	resp["valid"] = true
+	resp["message"] = "Voucher bisa dipakai"
+	resp["estimated_discount"] = discount
+	resp["estimated_final"] = finalPrice
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp)
+}
+
 func handleDeleteTask(w http.ResponseWriter, r *http.Request) {
 	taskID := r.URL.Query().Get("task_id")
 	if taskID == "" {
@@ -2344,6 +2968,134 @@ func handleDeleteTask(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(`{"message": "Task cancelled/deleted"}`))
 }
 
+func sanitizeDownloadName(name string) string {
+	if strings.TrimSpace(name) == "" {
+		return "folder"
+	}
+	cleaned := strings.ReplaceAll(name, " ", "_")
+	cleaned = strings.ReplaceAll(cleaned, "/", "_")
+	cleaned = strings.ReplaceAll(cleaned, "\\", "_")
+	return cleaned
+}
+
+func handleFolderManifest(w http.ResponseWriter, r *http.Request) {
+	folderID := r.URL.Query().Get("folder_id")
+	if folderID == "" {
+		http.Error(w, "folder_id is required", http.StatusBadRequest)
+		return
+	}
+
+	folderName := r.URL.Query().Get("folder_name")
+	if folderName == "" {
+		folderName = folderID
+	}
+
+	format := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("format")))
+	if format == "" {
+		format = "json"
+	}
+
+	files, err := globalClient.WalkFolderManifest(folderID)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Failed to walk folder: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	type ManifestEntry struct {
+		FileID         string    `json:"file_id"`
+		ParentID       string    `json:"parent_id"`
+		Name           string    `json:"name"`
+		RelativePath   string    `json:"relative_path"`
+		FolderPath     string    `json:"folder_path"`
+		Size           string    `json:"size"`
+		SizeStr        string    `json:"size_str"`
+		MimeType       string    `json:"mime_type"`
+		Modified       time.Time `json:"modified_time"`
+		ModifiedStr    string    `json:"modified_str"`
+		WebContentLink string    `json:"web_content_link"`
+	}
+
+	entries := make([]ManifestEntry, 0, len(files))
+	for _, f := range files {
+		var sizeBytes int64
+		fmt.Sscanf(f.Size, "%d", &sizeBytes)
+		entries = append(entries, ManifestEntry{
+			FileID:         f.ID,
+			ParentID:       f.ParentID,
+			Name:           f.Name,
+			RelativePath:   f.RelativePath,
+			FolderPath:     f.FolderPath,
+			Size:           f.Size,
+			SizeStr:        pikpak.FormatBytes(sizeBytes),
+			MimeType:       f.MimeType,
+			Modified:       f.Modified,
+			ModifiedStr:    pikpak.FormatTime(f.Modified),
+			WebContentLink: f.WebContentLink,
+		})
+	}
+
+	safeFolderName := sanitizeDownloadName(folderName)
+
+	switch format {
+	case "jsonl", "ndjson":
+		w.Header().Set("Content-Type", "application/x-ndjson; charset=utf-8")
+		w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s_manifest.jsonl\"", safeFolderName))
+		enc := json.NewEncoder(w)
+		for _, entry := range entries {
+			if err := enc.Encode(entry); err != nil {
+				http.Error(w, fmt.Sprintf("Failed to encode manifest: %v", err), http.StatusInternalServerError)
+				return
+			}
+		}
+		return
+
+	case "aria2", "aria2c":
+		var sb strings.Builder
+		sb.WriteString("# Aria2 input generated by /api/folder/manifest\n")
+		sb.WriteString(fmt.Sprintf("# Folder: %s\n", folderName))
+		sb.WriteString(fmt.Sprintf("# Total files: %d\n", len(entries)))
+		sb.WriteString("# ---------------------------------------------\n\n")
+
+		for _, entry := range entries {
+			if entry.WebContentLink == "" {
+				continue
+			}
+
+			dirPart := path.Dir(entry.RelativePath)
+			if dirPart == "." {
+				dirPart = ""
+			}
+			downloadDir := filepath.Clean(filepath.Join(safeFolderName, filepath.FromSlash(dirPart)))
+			outName := path.Base(entry.RelativePath)
+
+			sb.WriteString(entry.WebContentLink + "\n")
+			sb.WriteString("  dir=" + downloadDir + "\n")
+			sb.WriteString("  out=" + outName + "\n\n")
+		}
+
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s_aria2.txt\"", safeFolderName))
+		w.Write([]byte(sb.String()))
+		return
+
+	case "json":
+		resp := map[string]any{
+			"folder_id":    folderID,
+			"folder_name":  folderName,
+			"generated_at": time.Now().UTC(),
+			"total_files":  len(entries),
+			"items":        entries,
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+		return
+
+	default:
+		http.Error(w, "invalid format. use json|jsonl|aria2", http.StatusBadRequest)
+		return
+	}
+}
+
 func handleDownloadFolder(w http.ResponseWriter, r *http.Request) {
 	folderID := r.URL.Query().Get("folder_id")
 	if folderID == "" {
@@ -2357,7 +3109,7 @@ func handleDownloadFolder(w http.ResponseWriter, r *http.Request) {
 		folderName = folderID
 	}
 
-	files, err := globalClient.WalkFolderFiles(folderID)
+	files, err := globalClient.WalkFolderManifest(folderID)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Failed to walk folder: %v", err), http.StatusInternalServerError)
 		return
@@ -2389,9 +3141,7 @@ func handleDownloadFolder(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Sanitize folder name for filename
-	safeFolderName := strings.ReplaceAll(folderName, " ", "_")
-	safeFolderName = strings.ReplaceAll(safeFolderName, "/", "_")
-	safeFolderName = strings.ReplaceAll(safeFolderName, "\\", "_")
+	safeFolderName := sanitizeDownloadName(folderName)
 
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s_links.txt\"", safeFolderName))
@@ -2583,6 +3333,168 @@ func handleAdminPricing(w http.ResponseWriter, r *http.Request) {
 	}
 
 	http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+}
+
+func handleAdminVouchers(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		var vouchers []database.Voucher
+		if err := database.DB.Order("created_at desc").Find(&vouchers).Error; err != nil {
+			http.Error(w, "Failed to fetch vouchers", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(vouchers)
+		return
+
+	case http.MethodPost:
+		var req database.Voucher
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "Invalid request", http.StatusBadRequest)
+			return
+		}
+
+		req.Code = strings.ToUpper(strings.TrimSpace(req.Code))
+		req.Name = strings.TrimSpace(req.Name)
+		req.AppliesTo = strings.ToLower(strings.TrimSpace(req.AppliesTo))
+		req.DiscountType = strings.ToLower(strings.TrimSpace(req.DiscountType))
+		req.UsageScope = strings.ToLower(strings.TrimSpace(req.UsageScope))
+
+		if req.Code == "" {
+			http.Error(w, "code is required", http.StatusBadRequest)
+			return
+		}
+		if req.DiscountType != "percentage" && req.DiscountType != "fixed" {
+			http.Error(w, "discount_type must be percentage/fixed", http.StatusBadRequest)
+			return
+		}
+		if req.AppliesTo == "" {
+			req.AppliesTo = "all"
+		}
+		if req.AppliesTo != "all" && req.AppliesTo != "torrent" && req.AppliesTo != "premium" {
+			http.Error(w, "applies_to must be all/torrent/premium", http.StatusBadRequest)
+			return
+		}
+		if req.UsageScope == "" {
+			req.UsageScope = "global"
+		}
+		if req.UsageScope != "global" && req.UsageScope != "per_user" {
+			http.Error(w, "usage_scope must be global/per_user", http.StatusBadRequest)
+			return
+		}
+		if req.DiscountValue <= 0 {
+			http.Error(w, "discount_value must be > 0", http.StatusBadRequest)
+			return
+		}
+		if req.DiscountType == "percentage" && req.DiscountValue > 100 {
+			http.Error(w, "percentage max is 100", http.StatusBadRequest)
+			return
+		}
+
+		if err := database.DB.Create(&req).Error; err != nil {
+			http.Error(w, "Failed to create voucher", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(req)
+		return
+
+	case http.MethodPatch:
+		var req database.Voucher
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "Invalid request", http.StatusBadRequest)
+			return
+		}
+		if req.ID == 0 {
+			http.Error(w, "id is required", http.StatusBadRequest)
+			return
+		}
+
+		updates := map[string]any{}
+		if strings.TrimSpace(req.Code) != "" {
+			updates["code"] = strings.ToUpper(strings.TrimSpace(req.Code))
+		}
+		if strings.TrimSpace(req.Name) != "" {
+			updates["name"] = strings.TrimSpace(req.Name)
+		}
+		if req.Description != "" {
+			updates["description"] = req.Description
+		}
+		if strings.TrimSpace(req.DiscountType) != "" {
+			dt := strings.ToLower(strings.TrimSpace(req.DiscountType))
+			if dt != "percentage" && dt != "fixed" {
+				http.Error(w, "discount_type must be percentage/fixed", http.StatusBadRequest)
+				return
+			}
+			updates["discount_type"] = dt
+		}
+		if req.DiscountValue > 0 {
+			updates["discount_value"] = req.DiscountValue
+		}
+		if req.MinOrderAmount >= 0 {
+			updates["min_order_amount"] = req.MinOrderAmount
+		}
+		if req.MinDiscountAmount >= 0 {
+			updates["min_discount_amount"] = req.MinDiscountAmount
+		}
+		if req.MaxDiscountAmount >= 0 {
+			updates["max_discount_amount"] = req.MaxDiscountAmount
+		}
+		if strings.TrimSpace(req.AppliesTo) != "" {
+			ap := strings.ToLower(strings.TrimSpace(req.AppliesTo))
+			if ap != "all" && ap != "torrent" && ap != "premium" {
+				http.Error(w, "applies_to must be all/torrent/premium", http.StatusBadRequest)
+				return
+			}
+			updates["applies_to"] = ap
+		}
+		if strings.TrimSpace(req.UsageScope) != "" {
+			scope := strings.ToLower(strings.TrimSpace(req.UsageScope))
+			if scope != "global" && scope != "per_user" {
+				http.Error(w, "usage_scope must be global/per_user", http.StatusBadRequest)
+				return
+			}
+			updates["usage_scope"] = scope
+		}
+		if req.UsageLimit >= 0 {
+			updates["usage_limit"] = req.UsageLimit
+		}
+		updates["is_active"] = req.IsActive
+		updates["starts_at"] = req.StartsAt
+		updates["ends_at"] = req.EndsAt
+
+		if err := database.DB.Model(&database.Voucher{}).Where("id = ?", req.ID).Updates(updates).Error; err != nil {
+			http.Error(w, "Failed to update voucher", http.StatusInternalServerError)
+			return
+		}
+
+		var updated database.Voucher
+		if err := database.DB.First(&updated, req.ID).Error; err != nil {
+			http.Error(w, "Voucher not found", http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(updated)
+		return
+
+	case http.MethodDelete:
+		id, _ := strconv.Atoi(strings.TrimSpace(r.URL.Query().Get("id")))
+		if id <= 0 {
+			http.Error(w, "id is required", http.StatusBadRequest)
+			return
+		}
+		if err := database.DB.Delete(&database.Voucher{}, id).Error; err != nil {
+			http.Error(w, "Failed to delete voucher", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"message": "Voucher deleted"})
+		return
+
+	default:
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
 }
 
 func handleAdminStats(w http.ResponseWriter, r *http.Request) {

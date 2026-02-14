@@ -3,7 +3,6 @@ import { useNavigate } from 'react-router-dom';
 import Box from '@mui/joy/Box';
 import Sheet from '@mui/joy/Sheet';
 import Typography from '@mui/joy/Typography';
-import Chip from '@mui/joy/Chip';
 import Modal from '@mui/joy/Modal';
 import ModalDialog from '@mui/joy/ModalDialog';
 import DialogTitle from '@mui/joy/DialogTitle';
@@ -11,14 +10,17 @@ import DialogContent from '@mui/joy/DialogContent';
 import DialogActions from '@mui/joy/DialogActions';
 import Button from '@mui/joy/Button';
 import Alert from '@mui/joy/Alert';
+import Divider from '@mui/joy/Divider';
 import DragDropInput from '../components/DragDropInput';
 import PreviewModal from '../components/PreviewModal';
 import { useAuth } from '../App';
+import DownloadIcon from '@mui/icons-material/Download';
 
 export default function InputLinkPage() {
     const [preview, setPreview] = useState(null);
     const [checking, setChecking] = useState(false);
     const [premiumDialog, setPremiumDialog] = useState({ open: false, status: 'info', data: null, message: '', error: '' });
+    const [insufficientDialog, setInsufficientDialog] = useState({ open: false, service: '', data: null });
     const navigate = useNavigate();
     const { refreshUser } = useAuth();
 
@@ -30,17 +32,38 @@ export default function InputLinkPage() {
         setPremiumDialog({ open: false, status: 'info', data: null, message: '', error: '' });
     };
 
-    const handleCheck = async (url, mode) => {
+    const openInsufficientDialog = (service, data) => {
+        setInsufficientDialog({ open: true, service, data: data || null });
+    };
+
+    const closeInsufficientDialog = () => {
+        setInsufficientDialog({ open: false, service: '', data: null });
+    };
+
+    const formatIDR = (value) => `Rp ${Number(value || 0).toLocaleString('id-ID')}`;
+
+    const handleCheck = async (url, mode, voucher = '', options = {}) => {
+        const normalizedVoucher = String(voucher || '').trim().toUpperCase();
+        const estimatedSizeGb = Number(options?.estimatedSizeGb || 0);
         setChecking(true);
         try {
             if (mode === 'premium') {
                 const res = await fetch('/api/premium/request', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ url }),
+                    body: JSON.stringify({
+                        url,
+                        voucher: normalizedVoucher,
+                        estimated_size_gb: estimatedSizeGb > 0 ? estimatedSizeGb : 0,
+                    }),
                 });
                 const data = await res.json();
                 if (!res.ok) {
+                    if (res.status === 402) {
+                        openInsufficientDialog('premium', data);
+                        setChecking(false);
+                        return;
+                    }
                     openPremiumDialog({
                         status: 'danger',
                         data,
@@ -72,14 +95,23 @@ export default function InputLinkPage() {
             const res = await fetch('/api/task', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ url }),
+                body: JSON.stringify({ url, voucher: normalizedVoucher }),
             });
             const data = await res.json();
             if (res.ok) {
                 if (refreshUser) await refreshUser();
-                setPreview(data);
+                setPreview({ ...data, source_url: url });
             } else {
-                alert('Gagal: ' + (data.message || 'Terjadi kesalahan'));
+                if (res.status === 402) {
+                    openInsufficientDialog('torrent', data);
+                } else {
+                    openPremiumDialog({
+                        status: 'danger',
+                        data,
+                        message: data.message || 'Terjadi kesalahan',
+                        error: data.error || '',
+                    });
+                }
             }
         } catch (e) {
             alert('Error: ' + e.message);
@@ -108,7 +140,7 @@ export default function InputLinkPage() {
         <Box sx={{ maxWidth: 936, margin: 'auto' }}>
             <Sheet variant="outlined" sx={{ p: 2.5, borderRadius: 'md' }}>
                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1.25 }}>
-                    <Chip size="sm" variant="soft" color="primary">Input</Chip>
+                    <DownloadIcon color="primary" fontSize="small" />
                     <Typography level="title-md" sx={{ fontWeight: 700 }}>
                         Tambah Unduhan
                     </Typography>
@@ -142,6 +174,15 @@ export default function InputLinkPage() {
                                 {Number.isFinite(Number(premiumDialog.data.price)) && Number(premiumDialog.data.price) > 0 && (
                                     <Typography level="body-sm">Harga: <strong>Rp {Number(premiumDialog.data.price).toLocaleString('id-ID')}</strong></Typography>
                                 )}
+                                {Number.isFinite(Number(premiumDialog.data.original_price)) && Number(premiumDialog.data.original_price) > 0 && (
+                                    <Typography level="body-sm">Harga Awal: <strong>Rp {Number(premiumDialog.data.original_price).toLocaleString('id-ID')}</strong></Typography>
+                                )}
+                                {Number.isFinite(Number(premiumDialog.data.discount_amount)) && Number(premiumDialog.data.discount_amount) > 0 && (
+                                    <Typography level="body-sm">Diskon Voucher: <strong>Rp {Number(premiumDialog.data.discount_amount).toLocaleString('id-ID')}</strong></Typography>
+                                )}
+                                {premiumDialog.data.voucher_code && (
+                                    <Typography level="body-sm">Voucher: <strong>{premiumDialog.data.voucher_code}</strong></Typography>
+                                )}
                                 {Number.isFinite(Number(premiumDialog.data.required_price)) && Number(premiumDialog.data.required_price) > 0 && (
                                     <Typography level="body-sm">Dibutuhkan: <strong>Rp {Number(premiumDialog.data.required_price).toLocaleString('id-ID')}</strong></Typography>
                                 )}
@@ -151,6 +192,32 @@ export default function InputLinkPage() {
                                 {Number.isFinite(Number(premiumDialog.data.current_balance_after)) && (
                                     <Typography level="body-sm">Saldo Setelah Potong: <strong>Rp {Number(premiumDialog.data.current_balance_after).toLocaleString('id-ID')}</strong></Typography>
                                 )}
+
+                                {Number.isFinite(Number(premiumDialog.data.price)) && (
+                                    <>
+                                        <Divider sx={{ my: 0.75 }} />
+                                        <Typography level="body-sm" sx={{ fontWeight: 700 }}>
+                                            STRUK PENGURANGAN VOUCHER
+                                        </Typography>
+                                        <Box sx={{ display: 'grid', gridTemplateColumns: '1fr auto', rowGap: 0.35, columnGap: 1 }}>
+                                            <Typography level="body-xs" color="neutral">Harga Item</Typography>
+                                            <Typography level="body-xs" sx={{ fontWeight: 600 }}>
+                                                Rp {Number(premiumDialog.data.original_price ?? premiumDialog.data.price ?? 0).toLocaleString('id-ID')}
+                                            </Typography>
+
+                                            <Typography level="body-xs" color="neutral">Potongan Voucher</Typography>
+                                            <Typography level="body-xs" sx={{ fontWeight: 600 }}>
+                                                - Rp {Number(premiumDialog.data.discount_amount || 0).toLocaleString('id-ID')}
+                                            </Typography>
+
+                                            <Typography level="body-xs" color="neutral">Subtotal Setelah Voucher</Typography>
+                                            <Typography level="body-xs" sx={{ fontWeight: 700 }}>
+                                                Rp {Number(premiumDialog.data.price || 0).toLocaleString('id-ID')}
+                                            </Typography>
+                                        </Box>
+                                    </>
+                                )}
+
                                 {premiumDialog.error && (
                                     <Typography level="body-xs" color="danger">Detail: {premiumDialog.error}</Typography>
                                 )}
@@ -177,6 +244,48 @@ export default function InputLinkPage() {
                             </Button>
                         )}
                         <Button variant="outlined" onClick={closePremiumDialog}>Tutup</Button>
+                    </DialogActions>
+                </ModalDialog>
+            </Modal>
+
+            <Modal open={insufficientDialog.open} onClose={closeInsufficientDialog}>
+                <ModalDialog size="md" sx={{ width: 'min(560px, 92vw)' }}>
+                    <DialogTitle>Saldo Tidak Mencukupi</DialogTitle>
+                    <DialogContent>
+                        <Alert color="warning" variant="soft">
+                            Saldo kamu belum cukup untuk melanjutkan proses {insufficientDialog.service === 'premium' ? 'host premium' : 'torrent/magnet'}.
+                        </Alert>
+                        <Box sx={{ mt: 1.25, display: 'grid', gridTemplateColumns: '1fr auto', rowGap: 0.5, columnGap: 1 }}>
+                            <Typography level="body-sm" color="neutral">Saldo Saat Ini</Typography>
+                            <Typography level="body-sm" sx={{ fontWeight: 700 }}>
+                                {formatIDR(insufficientDialog?.data?.current_balance || 0)}
+                            </Typography>
+
+                            <Typography level="body-sm" color="neutral">Biaya Dibutuhkan</Typography>
+                            <Typography level="body-sm" sx={{ fontWeight: 700 }}>
+                                {formatIDR(insufficientDialog?.data?.required_price || insufficientDialog?.data?.price || 0)}
+                            </Typography>
+
+                            <Typography level="body-sm" color="neutral">Kekurangan</Typography>
+                            <Typography level="body-sm" sx={{ fontWeight: 700, color: 'danger.600' }}>
+                                {formatIDR(Math.max(0, Number(insufficientDialog?.data?.required_price || 0) - Number(insufficientDialog?.data?.current_balance || 0)))}
+                            </Typography>
+
+                            {Number(insufficientDialog?.data?.discount_amount || 0) > 0 && (
+                                <>
+                                    <Typography level="body-sm" color="neutral">Diskon Voucher</Typography>
+                                    <Typography level="body-sm" sx={{ fontWeight: 700 }}>
+                                        - {formatIDR(insufficientDialog?.data?.discount_amount || 0)}
+                                    </Typography>
+                                </>
+                            )}
+                        </Box>
+                    </DialogContent>
+                    <DialogActions>
+                        <Button variant="solid" onClick={() => { closeInsufficientDialog(); navigate('/balance'); }}>
+                            Top Up Sekarang
+                        </Button>
+                        <Button variant="outlined" onClick={closeInsufficientDialog}>Tutup</Button>
                     </DialogActions>
                 </ModalDialog>
             </Modal>

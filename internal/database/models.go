@@ -118,6 +118,38 @@ func (p *Pricing) CalculatePrice(sizeBytes int64) (price int64, chargedUnits int
 	return
 }
 
+// Voucher represents discount rules that can be applied on /input checkout.
+// DiscountType: "percentage" or "fixed"
+// AppliesTo: "all", "torrent", or "premium"
+type Voucher struct {
+	ID                uint       `gorm:"primaryKey" json:"id"`
+	Code              string     `gorm:"uniqueIndex;not null" json:"code"`
+	Name              string     `json:"name"`
+	Description       string     `json:"description"`
+	DiscountType      string     `gorm:"not null;default:'percentage'" json:"discount_type"`
+	DiscountValue     int64      `gorm:"not null;default:0" json:"discount_value"`
+	MinOrderAmount    int64      `gorm:"not null;default:0" json:"min_order_amount"`
+	MinDiscountAmount int64      `gorm:"not null;default:0" json:"min_discount_amount"`
+	MaxDiscountAmount int64      `gorm:"not null;default:0" json:"max_discount_amount"` // 0 = no cap
+	AppliesTo         string     `gorm:"not null;default:'all'" json:"applies_to"`
+	UsageScope        string     `gorm:"not null;default:'global'" json:"usage_scope"` // global or per_user
+	UsageLimit        int        `gorm:"not null;default:0" json:"usage_limit"` // 0 = unlimited
+	UsedCount         int        `gorm:"not null;default:0" json:"used_count"`
+	StartsAt          *time.Time `json:"starts_at"`
+	EndsAt            *time.Time `json:"ends_at"`
+	IsActive          bool       `gorm:"default:true" json:"is_active"`
+	CreatedAt         time.Time  `json:"created_at"`
+	UpdatedAt         time.Time  `json:"updated_at"`
+}
+
+// VoucherUsage stores voucher usage entries to support per-user quota checks.
+type VoucherUsage struct {
+	ID        uint      `gorm:"primaryKey" json:"id"`
+	VoucherID uint      `gorm:"index;not null" json:"voucher_id"`
+	UserID    uint      `gorm:"index;not null" json:"user_id"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
 // Banner represents an admin-created banner/slider for information page
 type Banner struct {
 	ID          uint      `gorm:"primaryKey" json:"id"`

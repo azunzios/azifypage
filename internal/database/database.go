@@ -62,6 +62,8 @@ func AutoMigrate() error {
 		&Notification{},
 		&PremiumRequest{},
 		&Pricing{},
+			&Voucher{},
+			&VoucherUsage{},
 		&Banner{},
 		&OfficialPost{},
 		&UserPost{},
