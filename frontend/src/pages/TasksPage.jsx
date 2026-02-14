@@ -54,11 +54,27 @@ export default function TasksPage() {
     const [historyIndex, setHistoryIndex] = useState(0);
     const [breadcrumb, setBreadcrumb] = useState([{ id: '', name: 'Unduhan Kamu' }]);
 
+    const parseResponse = async (res, fallback = null) => {
+        const text = await res.text();
+        if (!text) return fallback;
+        try {
+            return JSON.parse(text);
+        } catch {
+            throw new Error(text || `HTTP ${res.status}`);
+        }
+    };
+
     const loadFiles = useCallback((folderId = '') => {
         setLoading(true);
         const url = folderId ? `/api/files?parent_id=${folderId}` : '/api/files';
         fetch(url)
-            .then((res) => res.json())
+            .then(async (res) => {
+                const data = await parseResponse(res, []);
+                if (!res.ok) {
+                    throw new Error(data?.message || data?.error || `HTTP ${res.status}`);
+                }
+                return data;
+            })
             .then((data) => {
                 setFiles(data || []);
                 setLoading(false);
@@ -76,7 +92,13 @@ export default function TasksPage() {
     const loadPremiumHistory = useCallback(() => {
         setLoadingPremium(true);
         fetch(`/api/premium/request?page=${premiumPage}&page_size=25`)
-            .then((res) => res.json())
+            .then(async (res) => {
+                const data = await parseResponse(res, { items: [] });
+                if (!res.ok) {
+                    throw new Error(data?.message || data?.error || `HTTP ${res.status}`);
+                }
+                return data;
+            })
             .then((data) => {
                 if (Array.isArray(data)) {
                     // Backward compatibility if server still returns array

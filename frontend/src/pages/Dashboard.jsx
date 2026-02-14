@@ -9,12 +9,28 @@ export default function Dashboard() {
     const [breadcrumb, setBreadcrumb] = useState([{ id: '', name: 'My Files' }]); // Breadcrumb path
     const [downloadingFolder, setDownloadingFolder] = useState({ id: '', done: 0, total: 0 });
 
+    const parseResponse = async (res) => {
+        const text = await res.text();
+        if (!text) return [];
+        try {
+            return JSON.parse(text);
+        } catch {
+            throw new Error(text || `HTTP ${res.status}`);
+        }
+    };
+
     // Fetch files for a given folder
     const fetchFiles = useCallback((folderId = '') => {
         setLoading(true);
         const url = folderId ? `/api/files?parent_id=${folderId}` : '/api/files';
         fetch(url)
-            .then(res => res.json())
+            .then(async (res) => {
+                const data = await parseResponse(res);
+                if (!res.ok) {
+                    throw new Error(data?.message || data?.error || `HTTP ${res.status}`);
+                }
+                return data;
+            })
             .then(data => {
                 setFiles(data || []);
                 setLoading(false);

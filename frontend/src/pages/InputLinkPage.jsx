@@ -42,6 +42,16 @@ export default function InputLinkPage() {
 
     const formatIDR = (value) => `Rp ${Number(value || 0).toLocaleString('id-ID')}`;
 
+    const parseResponse = async (res) => {
+        const text = await res.text();
+        if (!text) return {};
+        try {
+            return JSON.parse(text);
+        } catch {
+            return { message: text };
+        }
+    };
+
     const handleCheck = async (url, mode, voucher = '', options = {}) => {
         const normalizedVoucher = String(voucher || '').trim().toUpperCase();
         const estimatedSizeGb = Number(options?.estimatedSizeGb || 0);
@@ -57,7 +67,7 @@ export default function InputLinkPage() {
                         estimated_size_gb: estimatedSizeGb > 0 ? estimatedSizeGb : 0,
                     }),
                 });
-                const data = await res.json();
+                const data = await parseResponse(res);
                 if (!res.ok) {
                     if (res.status === 402) {
                         openInsufficientDialog('premium', data);
@@ -97,7 +107,7 @@ export default function InputLinkPage() {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ url, voucher: normalizedVoucher }),
             });
-            const data = await res.json();
+            const data = await parseResponse(res);
             if (res.ok) {
                 if (refreshUser) await refreshUser();
                 setPreview({ ...data, source_url: url });

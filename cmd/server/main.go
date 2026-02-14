@@ -54,6 +54,58 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
+func writeJSON(w http.ResponseWriter, status int, payload any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(payload)
+}
+
+func writeJSONError(w http.ResponseWriter, status int, message string, err error) {
+	resp := map[string]any{"message": message}
+	if err != nil {
+		resp["error"] = err.Error()
+	}
+	writeJSON(w, status, resp)
+}
+
+func isInvalidPikPakFolderError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	if strings.Contains(msg, "parent_id") && (strings.Contains(msg, "invalid") || strings.Contains(msg, "not found")) {
+		return true
+	}
+	if strings.Contains(msg, "file not found") || strings.Contains(msg, "folder not found") || strings.Contains(msg, "resource not found") {
+		return true
+	}
+	return false
+}
+
+func recreateUserPikPakFolder(user *database.User) (string, error) {
+	folderName := strings.TrimSpace(user.PikPakFolderName)
+	if folderName == "" {
+		folderName = generateFolderName(user.Email)
+	}
+
+	folderID, err := globalClient.CreateFolder(folderName, "")
+	if err != nil {
+		return "", err
+	}
+
+	updates := map[string]any{
+		"pik_pak_folder_id":   folderID,
+		"pik_pak_folder_name": folderName,
+	}
+	if err := database.DB.Model(&database.User{}).Where("id = ?", user.ID).Updates(updates).Error; err != nil {
+		return "", err
+	}
+
+	user.PikPakFolderID = folderID
+	user.PikPakFolderName = folderName
+	return folderID, nil
+}
+
 // generateFolderName creates a folder name from email: username_XXXX (4 random hex chars)
 func generateFolderName(email string) string {
 	// Extract username from email
@@ -2895,8 +2947,16 @@ func handlePremiumRequest(w http.ResponseWriter, r *http.Request) {
 
 func handleListFiles(w http.ResponseWriter, r *http.Request) {
 	session := auth.GetSessionFromRequest(r)
+	if session == nil {
+		writeJSONError(w, http.StatusUnauthorized, "unauthorized", nil)
+		return
+	}
+
 	var user database.User
-	database.DB.First(&user, session.UserID)
+	if err := database.DB.First(&user, session.UserID).Error; err != nil {
+		writeJSONError(w, http.StatusUnauthorized, "User tidak ditemukan", err)
+		return
+	}
 
 	parentID := r.URL.Query().Get("parent_id")
 
@@ -2906,8 +2966,16 @@ func handleListFiles(w http.ResponseWriter, r *http.Request) {
 	}
 
 	files, err := globalClient.ListFiles(parentID)
+	if err != nil && parentID != "" && parentID == user.PikPakFolderID && isInvalidPikPakFolderError(err) {
+		newFolderID, recreateErr := recreateUserPikPakFolder(&user)
+		if recreateErr == nil {
+			files, err = globalClient.ListFiles(newFolderID)
+		} else {
+			log.Printf("recreate user folder gagal (user_id=%d): %v", user.ID, recreateErr)
+		}
+	}
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to list files: %v", err), http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, "Gagal mengambil daftar file", err)
 		return
 	}
 
@@ -3046,26 +3114,52 @@ func handleAddOfflineTask(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "Invalid request body", err)
 		return
 	}
 
 	req.URL = strings.TrimSpace(req.URL)
 	req.Voucher = strings.TrimSpace(req.Voucher)
 	if req.URL == "" {
-		http.Error(w, "url is required", http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "url is required", nil)
 		return
 	}
 
 	// Get user's folder to scope the download
 	session := auth.GetSessionFromRequest(r)
+	if session == nil {
+		writeJSONError(w, http.StatusUnauthorized, "unauthorized", nil)
+		return
+	}
+
 	var user database.User
-	database.DB.First(&user, session.UserID)
+	if err := database.DB.First(&user, session.UserID).Error; err != nil {
+		writeJSONError(w, http.StatusUnauthorized, "User tidak ditemukan", err)
+		return
+	}
 
 	// Add task to user's folder
-	res, err := globalClient.AddOfflineTaskToFolder(req.URL, user.PikPakFolderID)
+	targetFolderID := strings.TrimSpace(user.PikPakFolderID)
+	if targetFolderID == "" {
+		if newFolderID, folderErr := recreateUserPikPakFolder(&user); folderErr == nil {
+			targetFolderID = newFolderID
+		} else {
+			log.Printf("auto-create folder gagal (user_id=%d): %v", user.ID, folderErr)
+		}
+	}
+
+	res, err := globalClient.AddOfflineTaskToFolder(req.URL, targetFolderID)
+	if err != nil && targetFolderID != "" && isInvalidPikPakFolderError(err) {
+		newFolderID, recreateErr := recreateUserPikPakFolder(&user)
+		if recreateErr == nil {
+			targetFolderID = newFolderID
+			res, err = globalClient.AddOfflineTaskToFolder(req.URL, targetFolderID)
+		} else {
+			log.Printf("recreate folder saat add task gagal (user_id=%d): %v", user.ID, recreateErr)
+		}
+	}
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to add task: %v", err), http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, "Gagal menambahkan task", err)
 		return
 	}
 

@@ -7,6 +7,16 @@ export default function DownloadPage() {
     const [loading, setLoading] = useState(false);
     const [msg, setMsg] = useState('');
 
+    const parseResponse = async (res) => {
+        const text = await res.text();
+        if (!text) return {};
+        try {
+            return JSON.parse(text);
+        } catch {
+            return { message: text };
+        }
+    };
+
     const handleCheck = async () => {
         if (!url) return;
         setLoading(true);
@@ -19,7 +29,7 @@ export default function DownloadPage() {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ url })
             });
-            const data = await res.json();
+            const data = await parseResponse(res);
 
             if (res.ok) {
                 setPreview(data);
